@@ -62,7 +62,7 @@ using namespace DFHack;
 using namespace tthread;
 
 // FIXME: maybe make configurable with an ini option?
-#define MAX_CONSOLE_LINES 999;
+#define MAX_CONSOLE_LINES 999
 
 namespace DFHack
 {
@@ -165,14 +165,14 @@ namespace DFHack
             // Blank to EOL
             char* tmp = (char*)malloc(inf.dwSize.X);
             memset(tmp, ' ', inf.dwSize.X);
-            output(tmp, inf.dwSize.X, 0, inf.dwCursorPosition.Y);
+            blankout(tmp, inf.dwSize.X, 0, inf.dwCursorPosition.Y);
             free(tmp);
             COORD coord = {0, inf.dwCursorPosition.Y}; // Windows uses 0-based coordinates
             SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
         }
         void gotoxy(int x, int y)
         {
-            COORD coord = {x-1, y-1}; // Windows uses 0-based coordinates
+            COORD coord = {(SHORT)(x-1), (SHORT)(y-1)}; // Windows uses 0-based coordinates
             SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
         }
 
@@ -210,11 +210,21 @@ namespace DFHack
             }
         }
 
-        void output(const char* str, size_t len, int x, int y)
+        void blankout(const char* str, size_t len, int x, int y)
         {
             COORD pos = { (SHORT)x, (SHORT)y };
             DWORD count = 0;
             WriteConsoleOutputCharacterA(console_out, str, len, pos, &count);
+        }
+
+        void output(const char* str, size_t len, int x, int y)
+        {
+            COORD pos = { (SHORT)x, (SHORT)y };
+            DWORD count = 0;
+            CONSOLE_SCREEN_BUFFER_INFO inf = { 0 };
+            GetConsoleScreenBufferInfo(console_out, &inf);
+            SetConsoleCursorPosition(console_out, pos);
+            WriteConsoleA(console_out, str, len, &count, NULL);
         }
 
         void prompt_refresh()
@@ -245,7 +255,7 @@ namespace DFHack
                 // Blank to EOL
                 char* tmp = (char*)malloc(inf.dwSize.X - (plen + len));
                 memset(tmp, ' ', inf.dwSize.X - (plen + len));
-                output(tmp, inf.dwSize.X - (plen + len), len + plen, inf.dwCursorPosition.Y);
+                blankout(tmp, inf.dwSize.X - (plen + len), len + plen, inf.dwCursorPosition.Y);
                 free(tmp);
             }
             inf.dwCursorPosition.X = (SHORT)(cooked_cursor + plen);
@@ -275,7 +285,10 @@ namespace DFHack
                 INPUT_RECORD rec;
                 DWORD count;
                 lock->unlock();
-                ReadConsoleInputA(console_in, &rec, 1, &count);
+                if (ReadConsoleInputA(console_in, &rec, 1, &count) == 0) {
+                    lock->lock();
+                    return Console::SHUTDOWN;
+                }
                 lock->lock();
                 if (rec.EventType != KEY_EVENT || !rec.Event.KeyEvent.bKeyDown)
                     continue;
@@ -369,7 +382,7 @@ namespace DFHack
             state = con_lineedit;
             this->prompt = prompt;
             count = prompt_loop(lock, ch);
-            if(count != -1)
+            if(count > Console::FAILURE)
                 output = raw_buffer;
             state = con_unclaimed;
             print("\n");
@@ -434,7 +447,7 @@ bool Console::init(bool)
 {
     d = new Private();
     int                        hConHandle;
-    long                       lStdHandle;
+    intptr_t                   lStdHandle;
     CONSOLE_SCREEN_BUFFER_INFO coninfo;
     FILE                       *fp;
     DWORD  oldMode, newMode;
@@ -469,14 +482,14 @@ bool Console::init(bool)
 
     // redirect unbuffered STDOUT to the console
     d->console_out = GetStdHandle(STD_OUTPUT_HANDLE);
-    lStdHandle = (long)d->console_out;
+    lStdHandle = (intptr_t)d->console_out;
     hConHandle = _open_osfhandle(lStdHandle, _O_TEXT);
     d->dfout_C = _fdopen( hConHandle, "w" );
     setvbuf( d->dfout_C, NULL, _IONBF, 0 );
 
     // redirect unbuffered STDIN to the console
     d->console_in = GetStdHandle(STD_INPUT_HANDLE);
-    lStdHandle = (long)d->console_in;
+    lStdHandle = (intptr_t)d->console_in;
     hConHandle = _open_osfhandle(lStdHandle, _O_TEXT);
     fp = _fdopen( hConHandle, "r" );
     *stdin = *fp;
@@ -578,7 +591,7 @@ void Console::cursor(bool enable)
 int Console::lineedit(const std::string & prompt, std::string & output, CommandHistory & ch)
 {
     wlock->lock();
-    int ret = -2;
+    int ret = Console::SHUTDOWN;
     if(inited)
         ret = d->lineedit(prompt,output,wlock,ch);
     wlock->unlock();
@@ -588,4 +601,16 @@ int Console::lineedit(const std::string & prompt, std::string & output, CommandH
 void Console::msleep (unsigned int msec)
 {
     Sleep(msec);
+}
+
+bool Console::hide()
+{
+    ShowWindow( GetConsoleWindow(), SW_HIDE );
+    return true;
+}
+
+bool Console::show()
+{
+    ShowWindow( GetConsoleWindow(), SW_RESTORE );
+    return true;
 }

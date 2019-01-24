@@ -23,10 +23,11 @@
  */
 namespace DFHack
 {
+    DFLibrary* GLOBAL_NAMES = (DFLibrary*)RTLD_DEFAULT;
     DFLibrary * OpenPlugin (const char * filename)
     {
         dlerror();
-        DFLibrary * ret =  (DFLibrary *) dlopen(filename, RTLD_NOW);
+        DFLibrary * ret =  (DFLibrary *) dlopen(filename, RTLD_NOW | RTLD_LOCAL);
         if(!ret)
         {
             std::cerr << dlerror() << std::endl;

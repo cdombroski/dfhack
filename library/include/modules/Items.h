@@ -164,7 +164,8 @@ DFHACK_EXPORT std::string getDescription(df::item *item, int type = 0, bool deco
 
 DFHACK_EXPORT bool moveToGround(MapExtras::MapCache &mc, df::item *item, df::coord pos);
 DFHACK_EXPORT bool moveToContainer(MapExtras::MapCache &mc, df::item *item, df::item *container);
-DFHACK_EXPORT bool moveToBuilding(MapExtras::MapCache &mc, df::item *item, df::building_actual *building,int16_t use_mode);
+DFHACK_EXPORT bool moveToBuilding(MapExtras::MapCache &mc, df::item *item, df::building_actual *building,
+    int16_t use_mode = 0, bool force_in_building = false);
 DFHACK_EXPORT bool moveToInventory(MapExtras::MapCache &mc, df::item *item, df::unit *unit,
     df::unit_inventory_item::T_mode mode = df::unit_inventory_item::Hauled, int body_part = -1);
 
@@ -181,6 +182,19 @@ DFHACK_EXPORT int getItemBaseValue(int16_t item_type, int16_t item_subtype, int1
 DFHACK_EXPORT int getValue(df::item *item);
 
 DFHACK_EXPORT int32_t createItem(df::item_type type, int16_t item_subtype, int16_t mat_type, int32_t mat_index, df::unit* creator);
+
+/// Returns true if the item is free from mandates, or false if mandates prevent trading the item
+DFHACK_EXPORT bool checkMandates(df::item *item);
+/// Checks whether the item can be traded
+DFHACK_EXPORT bool canTrade(df::item *item);
+/// Checks whether the item and all items it contains, if any, can be traded
+DFHACK_EXPORT bool canTradeWithContents(df::item *item);
+
+/// Checks whether the item is an assigned hauling vehicle
+DFHACK_EXPORT bool isRouteVehicle(df::item *item);
+/// Checks whether the item is assigned to a squad
+DFHACK_EXPORT bool isSquadEquipment(df::item *item);
+
 }
 }
 

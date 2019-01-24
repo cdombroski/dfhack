@@ -26,6 +26,7 @@ distribution.
 
 #include <windows.h>
 #include <stdint.h>
+#include <mutex>
 #include <vector>
 #include <string>
 #include "Core.h"
@@ -40,8 +41,8 @@ distribution.
 
 // we don't know which of the SDL functions will be called first... so we
 // just catch the first one and init all our function pointers at that time
-bool FirstCall(void);
-bool inited = false;
+static void InitSDLPointers(void);
+static std::once_flag inited;
 
 /// wrappers for SDL 1.2 functions used in 40d16
 /***** Condition variables
@@ -143,7 +144,7 @@ DFhackCExport uint32_t SDL_GetTicks(void)
 /***** Surfaces
 SDL_CreateRGBSurface
     SDL_Surface * SDLCALL SDL_CreateRGBSurface
-        (Uint32 flags, int width, int height, int depth, 
+        (Uint32 flags, int width, int height, int depth,
         Uint32 Rmask, Uint32 Gmask, Uint32 Bmask, Uint32 Amask);
 
 SDL_CreateRGBSurfaceFrom
@@ -216,7 +217,7 @@ SDL_SaveBMP_RW
 
 SDL_SetAlpha
     int SDLCALL SDL_SetAlpha(SDL_Surface *surface, Uint32 flag, Uint8 alpha);
-    
+
 SDL_SetColorKey
     int SDLCALL SDL_SetColorKey(SDL_Surface *surface, Uint32 flag, Uint32 key);
 
@@ -271,9 +272,9 @@ DFhackCExport vPtr SDL_SetVideoMode(int width, int height, int bpp, uint32_t fla
 static int (*_SDL_UpperBlit)(DFHack::DFSDL_Surface* src, DFHack::DFSDL_Rect* srcrect, DFHack::DFSDL_Surface* dst, DFHack::DFSDL_Rect* dstrect) = 0;
 DFhackCExport int SDL_UpperBlit(DFHack::DFSDL_Surface* src, DFHack::DFSDL_Rect* srcrect, DFHack::DFSDL_Surface* dst, DFHack::DFSDL_Rect* dstrect)
 {
-    if ( dstrect != NULL && dstrect->h != 0 && dstrect->w != 0 )
+    DFHack::Core & c = DFHack::Core::getInstance();
+    if ( c.isValid() && dstrect != NULL && dstrect->h != 0 && dstrect->w != 0 )
     {
-        DFHack::Core & c = DFHack::Core::getInstance();
         DFHack::Graphic* g = c.getGraphic();
         DFHack::DFTileSurface* ov = g->Call(dstrect->x/dstrect->w, dstrect->y/dstrect->h);
 
@@ -311,16 +312,16 @@ DFhackCExport int SDL_UpperBlit(DFHack::DFSDL_Surface* src, DFHack::DFSDL_Rect* 
 /***** Even more surface
 SDL_GL_GetAttribute
     int SDLCALL SDL_GL_GetAttribute(SDL_GLattr attr, int* value);
-    
+
 SDL_GL_SetAttribute
     int SDLCALL SDL_GL_SetAttribute(SDL_GLattr attr, int value);
-    
+
 SDL_WM_SetCaption
     void SDLCALL SDL_WM_SetCaption(const char *title, const char *icon);
-    
+
 SDL_WM_SetIcon
     void SDLCALL SDL_WM_SetIcon(SDL_Surface *icon, Uint8 *mask);
-    
+
 SDL_FillRect
     int SDLCALL SDL_FillRect(SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color);
 */
@@ -463,7 +464,7 @@ DFhackCExport char * SDL_GetError(void)
 }
 
 static void (*_SDL_SetError)(const char *fmt, ...) = 0;
-DFhackCExport void SDL_SetError(const char *fmt, ...)
+DFhackCExport void SDL_SetError(const char *fmt, ...) Wformat(printf,1,2)
 {
     char buf[1024];
     va_list args;
@@ -612,8 +613,7 @@ DFhackCExport int SDL_NumJoysticks(void)
 static void (*_SDL_GL_SwapBuffers)(void) = 0;
 DFhackCExport void SDL_GL_SwapBuffers(void)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     _SDL_GL_SwapBuffers();
 }
 
@@ -621,16 +621,14 @@ DFhackCExport void SDL_GL_SwapBuffers(void)
 static int (*_SDL_Flip)(void * some_ptr) = 0;
 DFhackCExport int SDL_Flip(void * some_ptr)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_Flip(some_ptr);
 }
 
 static int (*_SDL_Init)(uint32_t flags) = 0;
 DFhackCExport int SDL_Init(uint32_t flags)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_Init(flags);
 }
 
@@ -640,16 +638,14 @@ MORE CRAP
 static void * (*_SDL_CreateSemaphore)(uint32_t initial_value) = 0;
 DFhackCExport void *SDL_CreateSemaphore(uint32_t initial_value)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_CreateSemaphore(initial_value);
 }
 
 static vPtr (*_SDL_CreateThread)(int (*fn)(void *), void *data) = 0;
 DFhackCExport  vPtr SDL_CreateThread(int (*fn)(void *), void *data)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_CreateThread(fn,data);
 }
 
@@ -657,77 +653,81 @@ DFhackCExport  vPtr SDL_CreateThread(int (*fn)(void *), void *data)
 static void (*_SDL_Delay)(uint32_t ms) = 0;
 DFhackCExport void SDL_Delay(uint32_t ms)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     _SDL_Delay(ms);
 }
 
 static void (*_SDL_DestroySemaphore)(void *sem) = 0;
 DFhackCExport void SDL_DestroySemaphore(void *sem)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     _SDL_DestroySemaphore(sem);
 }
 
 static uint8_t (*_SDL_GetAppState)(void) = 0;
 DFhackCExport uint8_t SDL_GetAppState(void)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_GetAppState();
 }
 
 static uint8_t (*_SDL_GetMouseState)(int *, int *) = 0;
 DFhackCExport uint8_t SDL_GetMouseState(int *x, int *y)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_GetMouseState(x,y);
 }
 
 static int (*_SDL_InitSubSystem)(uint32_t flags) = 0;
 DFhackCExport int SDL_InitSubSystem(uint32_t flags)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_InitSubSystem(flags);
 }
 
 static int (*_SDL_SemPost)(void *sem) = 0;
 DFhackCExport int SDL_SemPost(void *sem)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_SemPost(sem);
 }
 
 static int (*_SDL_SemTryWait)(void *sem) = 0;
 DFhackCExport int SDL_SemTryWait(void *sem)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_SemTryWait(sem);
 }
 
 static int (*_SDL_SemWait)(void *sem) = 0;
 DFhackCExport int SDL_SemWait(void *sem)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_SemWait(sem);
 }
 
 static uint32_t (*_SDL_ThreadID)(void) = 0;
 DFhackCExport uint32_t SDL_ThreadID(void)
 {
-    if(!inited)
-        FirstCall();
+    InitSDLPointers();
     return _SDL_ThreadID();
 }
 
-// FIXME: this has to be thread-safe.
-bool FirstCall()
+static char* (*_SDL_getenv)(const char *name) = 0;
+DFhackCExport char* SDL_getenv(const char *name)
+{
+    InitSDLPointers();
+    return _SDL_getenv(name);
+}
+
+static size_t (*_SDL_strlcat)(char *dst, const char *src, size_t maxlen) = 0;
+DFhackCExport size_t SDL_strlcat(char *dst, const char *src, size_t maxlen)
+{
+    InitSDLPointers();
+    return _SDL_strlcat(dst, src, maxlen);
+}
+
+void FirstCall()
 {
     // reroute stdout and stderr
     freopen("stdout.log", "w", stdout);
@@ -737,7 +737,7 @@ bool FirstCall()
     {
         MessageBox(0,"Can't load SDLreal.dll\n","Error", MB_OK);
         fprintf(stderr, "Can't load SDLreal.dll\n");
-        return 0;
+        return;
     }
     fprintf(stderr, "FirstCall()\n");
     // stuff for DF
@@ -787,7 +787,7 @@ bool FirstCall()
     _SDL_mutexP = (int (*)(vPtr))GetProcAddress(realSDLlib,"SDL_mutexP");
     _SDL_mutexV = (int (*)(vPtr))GetProcAddress(realSDLlib,"SDL_mutexV");
     _SDL_strlcpy = (size_t (*)(char*, const char*, size_t))GetProcAddress(realSDLlib,"SDL_strlcpy");
-    
+
     // stuff for SDL_Image
     _SDL_ClearError = (void (*)())GetProcAddress(realSDLlib,"SDL_ClearError");
     _SDL_Error = (void (*)(int))GetProcAddress(realSDLlib,"SDL_Error");
@@ -799,7 +799,7 @@ bool FirstCall()
     _SDL_SetError = (void (*)(const char*, ...))GetProcAddress(realSDLlib,"SDL_SetError");
     _SDL_UnloadObject = (void (*)(vPtr))GetProcAddress(realSDLlib,"SDL_UnloadObject");
     _SDL_FillRect = (int (*)(void*,void*,uint32_t))GetProcAddress(realSDLlib,"SDL_FillRect");
-    
+
     // new in DF 0.31.04
     _SDL_CreateSemaphore = (void* (*)(uint32_t))GetProcAddress(realSDLlib,"SDL_CreateSemaphore");
     _SDL_CreateThread = (vPtr (*)(int (*fn)(void *), void *data))GetProcAddress(realSDLlib,"SDL_CreateThread");
@@ -812,10 +812,17 @@ bool FirstCall()
     _SDL_SemTryWait = (int (*)(void *))GetProcAddress(realSDLlib,"SDL_SemTryWait");
     _SDL_SemWait = (int (*)(void *))GetProcAddress(realSDLlib,"SDL_SemWait");
     _SDL_ThreadID = (uint32_t (*)(void))GetProcAddress(realSDLlib,"SDL_ThreadID");
-    
+
+    // new in DF 0.43.05
+    _SDL_getenv = (char* (*)(const char*))GetProcAddress(realSDLlib,"SDL_getenv");
+    _SDL_strlcat = (size_t (*)(char*, const char*, size_t))GetProcAddress(realSDLlib,"SDL_strlcat");
+
     _SDL_EnableUNICODE(1);
 
     fprintf(stderr,"Initized HOOKS!\n");
-    inited = true;
-    return 1;
+}
+
+void InitSDLPointers()
+{
+    std::call_once(inited, [](){ FirstCall(); });
 }

@@ -53,7 +53,7 @@ using namespace DFHack;
 
 bool Filesystem::chdir (std::string path)
 {
-    return !(bool)::chdir(path.c_str());
+    return ::chdir(path.c_str()) == 0;
 }
 
 std::string Filesystem::getcwd ()
@@ -79,7 +79,7 @@ bool Filesystem::mkdir (std::string path)
     fail = ::mkdir(path.c_str(), S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP |
                    S_IWGRP | S_IXGRP | S_IROTH | S_IXOTH);
 #endif
-    return !(bool)fail;
+    return fail == 0;
 }
 
 bool Filesystem::rmdir (std::string path)
@@ -90,7 +90,7 @@ bool Filesystem::rmdir (std::string path)
 #else
     fail = ::rmdir(path.c_str());
 #endif
-    return !(bool)fail;
+    return fail == 0;
 }
 
 #ifdef _WIN32
@@ -116,30 +116,31 @@ _filetype mode2type (mode_t mode) {
 
 bool Filesystem::stat (std::string path, STAT_STRUCT &info)
 {
-    return !(bool)(STAT_FUNC(path.c_str(), &info));
+    return (STAT_FUNC(path.c_str(), &info)) == 0;
 }
 
 bool Filesystem::exists (std::string path)
 {
     STAT_STRUCT info;
-    return (bool)Filesystem::stat(path, info);
+    return Filesystem::stat(path, info);
 }
 
 _filetype Filesystem::filetype (std::string path)
 {
     STAT_STRUCT info;
-    Filesystem::stat(path, info);
+    if (!Filesystem::stat(path, info))
+        return FILETYPE_NONE;
     return mode2type(info.st_mode);
 }
 
 bool Filesystem::isfile (std::string path)
 {
-    return Filesystem::filetype(path) == FILETYPE_FILE;
+    return Filesystem::exists(path) && Filesystem::filetype(path) == FILETYPE_FILE;
 }
 
 bool Filesystem::isdir (std::string path)
 {
-    return Filesystem::filetype(path) == FILETYPE_DIRECTORY;
+    return Filesystem::exists(path) && Filesystem::filetype(path) == FILETYPE_DIRECTORY;
 }
 
 #define DEFINE_STAT_TIME_WRAPPER(attr) \

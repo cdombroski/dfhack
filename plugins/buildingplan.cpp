@@ -25,10 +25,8 @@ static bool is_planmode_enabled(df::building_type type)
 #define DAY_TICKS 1200
 DFhackCExport command_result plugin_onupdate(color_ostream &out)
 {
-    static decltype(world->frame_counter) last_frame_count = 0;
-    if ((world->frame_counter - last_frame_count) >= DAY_TICKS/2)
+    if (Maps::IsValid() && !World::ReadPauseState() && world->frame_counter % (DAY_TICKS/2) == 0)
     {
-        last_frame_count = world->frame_counter;
         planner.doCycle();
         roomMonitor.doCycle();
     }
@@ -51,7 +49,7 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
 
     bool isInPlannedBuildingQueryMode()
     {
-        return (ui->main.mode == df::ui_sidebar_mode::QueryBuilding || 
+        return (ui->main.mode == df::ui_sidebar_mode::QueryBuilding ||
             ui->main.mode == df::ui_sidebar_mode::BuildingItems) &&
             planner.getSelectedPlannedBuilding();
     }
@@ -91,7 +89,7 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
     {
         if (getNoblePositionOfSelectedBuildingOwner().size() > 0)
             return canReserveRoom(world->selected_building);
-        else 
+        else
             return false;
     }
 
@@ -105,21 +103,19 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
                 planmode_enabled[type] = !planmode_enabled[type];
                 if (!planmode_enabled[type])
                 {
-                    send_key(interface_key::CURSOR_DOWN_Z);
-                    send_key(interface_key::CURSOR_UP_Z);
+                    Gui::refreshSidebar();
                     planner.in_dummmy_screen = false;
                 }
                 return true;
             }
             else if (input->count(interface_key::CUSTOM_P) ||
                      input->count(interface_key::CUSTOM_F) ||
-                     input->count(interface_key::CUSTOM_Q) ||
                      input->count(interface_key::CUSTOM_D) ||
                      input->count(interface_key::CUSTOM_N))
             {
                 show_help = true;
             }
-            
+
             if (is_planmode_enabled(type))
             {
                 if (planner.inQuickFortMode() && planner.in_dummmy_screen)
@@ -138,8 +134,7 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
                 {
                     if (ui_build_selector->errors.size() == 0 && planner.allocatePlannedBuilding(type))
                     {
-                        send_key(interface_key::CURSOR_DOWN_Z);
-                        send_key(interface_key::CURSOR_UP_Z);
+                        Gui::refreshSidebar();
                         if (planner.inQuickFortMode())
                         {
                             planner.in_dummmy_screen = true;
@@ -161,11 +156,23 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
                 }
                 else if (input->count(interface_key::CUSTOM_SHIFT_M))
                 {
-                    Screen::show(new ViewscreenChooseMaterial(planner.getDefaultItemFilterForType(type)));
+                    Screen::show(dts::make_unique<ViewscreenChooseMaterial>(planner.getDefaultItemFilterForType(type)), plugin_self);
+                }
+                else if (input->count(interface_key::CUSTOM_Q))
+                {
+                    planner.adjustMinQuality(type, -1);
+                }
+                else if (input->count(interface_key::CUSTOM_W))
+                {
+                    planner.adjustMinQuality(type, 1);
                 }
                 else if (input->count(interface_key::CUSTOM_SHIFT_Q))
                 {
-                    planner.cycleDefaultQuality(type);
+                    planner.adjustMaxQuality(type, -1);
+                }
+                else if (input->count(interface_key::CUSTOM_SHIFT_W))
+                {
+                    planner.adjustMaxQuality(type, 1);
                 }
                 else if (input->count(interface_key::CUSTOM_SHIFT_D))
                 {
@@ -184,15 +191,17 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
             {
                 planner.removeSelectedPlannedBuilding(); // Remove persistent data
             }
-            
+
         }
         else if (isInNobleRoomQueryMode())
         {
+            if (Gui::inRenameBuilding())
+                return false;
             auto np = getNoblePositionOfSelectedBuildingOwner();
-            df::interface_key last_token = *input->rbegin();
+            df::interface_key last_token = get_string_key(input);
             if (last_token >= interface_key::STRING_A048 && last_token <= interface_key::STRING_A058)
             {
-                int selection = last_token - interface_key::STRING_A048;
+                size_t selection = last_token - interface_key::STRING_A048;
                 if (np.size() < selection)
                     return false;
                 roomMonitor.toggleRoomForPosition(world->selected_building->id, np.at(selection-1).position->code);
@@ -271,8 +280,11 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
 
                     auto filter = planner.getDefaultItemFilterForType(type);
 
-                    OutputHotkeyString(x, y, "Min Quality: ", "Q");
+                    OutputHotkeyString(x, y, "Min Quality: ", "qw");
                     OutputString(COLOR_BROWN, x, y, filter->getMinQuality(), true, left_margin);
+
+                    OutputHotkeyString(x, y, "Max Quality: ", "QW");
+                    OutputString(COLOR_BROWN, x, y, filter->getMaxQuality(), true, left_margin);
 
                     OutputToggleString(x, y, "Decorated Only: ", "D", filter->decorated_only, true, left_margin);
 
@@ -299,7 +311,10 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
             auto filter = planner.getSelectedPlannedBuilding()->getFilter();
             y = 24;
             OutputString(COLOR_BROWN, x, y, "Planned Building Filter:", true, left_margin);
+            OutputString(COLOR_BROWN, x, y, "Min Quality: ", false, left_margin);
             OutputString(COLOR_BLUE, x, y, filter->getMinQuality(), true, left_margin);
+            OutputString(COLOR_BROWN, x, y, "Max Quality: ", false, left_margin);
+            OutputString(COLOR_BLUE, x, y, filter->getMaxQuality(), true, left_margin);
 
             if (filter->decorated_only)
                 OutputString(COLOR_BLUE, x, y, "Decorated Only", true, left_margin);
@@ -315,7 +330,7 @@ struct buildingplan_hook : public df::viewscreen_dwarfmodest
             int y = 24;
             OutputString(COLOR_BROWN, x, y, "DFHack", true, left_margin);
             OutputString(COLOR_WHITE, x, y, "Auto-allocate to:", true, left_margin);
-            for (int i = 0; i < np.size() && i < 9; i++)
+            for (size_t i = 0; i < np.size() && i < 9; i++)
             {
                 bool enabled = (roomMonitor.getReservedNobleCode(world->selected_building->id)
                     == np[i].position->code);
@@ -347,7 +362,7 @@ static command_result buildingplan_cmd(color_ostream &out, vector <string> & par
         {
             show_debugging = (toLower(parameters[1]) == "on");
             out << "Debugging " << ((show_debugging) ? "enabled" : "disabled") << endl;
-        }        
+        }
     }
 
     return CR_OK;

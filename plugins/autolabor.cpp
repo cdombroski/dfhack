@@ -109,6 +109,9 @@ enum dwarf_state {
     // Busy with a useful task
     BUSY,
 
+    // Busy with a useful task that requires a tool
+    EXCLUSIVE,
+
     // In the military, can't work
     MILITARY,
 
@@ -119,11 +122,12 @@ enum dwarf_state {
     OTHER
 };
 
-const int NUM_STATE = 5;
+const int NUM_STATE = 6;
 
 static const char *state_names[] = {
     "IDLE",
     "BUSY",
+    "EXCLUSIVE",
     "MILITARY",
     "CHILD",
     "OTHER",
@@ -133,13 +137,13 @@ static const dwarf_state dwarf_states[] = {
     BUSY /* CarveFortification */,
     BUSY /* DetailWall */,
     BUSY /* DetailFloor */,
-    BUSY /* Dig */,
-    BUSY /* CarveUpwardStaircase */,
-    BUSY /* CarveDownwardStaircase */,
-    BUSY /* CarveUpDownStaircase */,
-    BUSY /* CarveRamp */,
-    BUSY /* DigChannel */,
-    BUSY /* FellTree */,
+    EXCLUSIVE /* Dig */,
+    EXCLUSIVE /* CarveUpwardStaircase */,
+    EXCLUSIVE /* CarveDownwardStaircase */,
+    EXCLUSIVE /* CarveUpDownStaircase */,
+    EXCLUSIVE /* CarveRamp */,
+    EXCLUSIVE /* DigChannel */,
+    EXCLUSIVE /* FellTree */,
     BUSY /* GatherPlants */,
     BUSY /* RemoveConstruction */,
     BUSY /* CollectWebs */,
@@ -154,7 +158,7 @@ static const dwarf_state dwarf_states[] = {
     OTHER /* Sleep */,
     BUSY /* CollectSand */,
     BUSY /* Fish */,
-    BUSY /* Hunt */,
+    EXCLUSIVE /* Hunt */,
     OTHER /* HuntVermin */,
     BUSY /* Kidnap */,
     BUSY /* BeatCriminal */,
@@ -183,7 +187,7 @@ static const dwarf_state dwarf_states[] = {
     OTHER /* GoShopping2 */,
     BUSY /* Clean */,
     OTHER /* Rest */,
-    BUSY /* PickupEquipment */,
+    EXCLUSIVE /* PickupEquipment */,
     BUSY /* DumpItem */,
     OTHER /* StrangeMoodCrafter */,
     OTHER /* StrangeMoodJeweller */,
@@ -361,7 +365,16 @@ static const dwarf_state dwarf_states[] = {
     BUSY /* PushTrackVehicle */,
     BUSY /* PlaceTrackVehicle */,
     BUSY /* StoreItemInVehicle */,
-    BUSY /* GeldAnimal */
+    BUSY /* GeldAnimal */,
+    BUSY /* MakeFigurine */,
+    BUSY /* MakeAmulet */,
+    BUSY /* MakeScepter */,
+    BUSY /* MakeCrown */,
+    BUSY /* MakeRing */,
+    BUSY /* MakeEarring */,
+    BUSY /* MakeBracelet */,
+    BUSY /* MakeGem */,
+    BUSY /* PutItemOnDisplay */,
 };
 
 struct labor_info
@@ -393,7 +406,14 @@ struct labor_default
     int active_dwarfs;
 };
 
+// The percentage of the dwarves assigned as haulers at any one time.
 static int hauler_pct = 33;
+
+// The maximum percentage of dwarves who will be allowed to be idle.
+// Decreasing this will encourage autolabor to keep dwarves busy,
+// at the expense of making it harder for dwarves to specialize in
+// specific skills.
+static int idler_pct = 10;
 
 static std::vector<struct labor_info> labor_infos;
 
@@ -478,7 +498,9 @@ static const struct labor_default default_labor_infos[] = {
     /* HAUL_WATER */            {HAULERS, false, 1, 200, 0},
     /* GELD */                  {AUTOMATIC, false, 1, 200, 0},
     /* BUILD_ROAD */            {AUTOMATIC, false, 1, 200, 0},
-    /* BUILD_CONSTRUCTION */    {AUTOMATIC, false, 1, 200, 0}
+    /* BUILD_CONSTRUCTION */    {AUTOMATIC, false, 1, 200, 0},
+    /* PAPERMAKING */           {AUTOMATIC, false, 1, 200, 0},
+    /* BOOKBINDING */           {AUTOMATIC, false, 1, 200, 0}
 };
 
 static const int responsibility_penalties[] = {
@@ -521,7 +543,6 @@ struct dwarf_info_t
     bool medical; // this dwarf has medical responsibility
     bool trader;  // this dwarf has trade responsibility
     bool diplomacy; // this dwarf meets with diplomats
-    int single_labor; // this dwarf will be exclusively assigned to one labor (-1/NONE for none)
 };
 
 static bool isOptionEnabled(unsigned flag)
@@ -585,7 +606,7 @@ static void init_state()
     {
         string key = p->key();
         df::unit_labor labor = (df::unit_labor) atoi(key.substr(strlen("autolabor/labors/")).c_str());
-        if (labor >= 0 && labor <= labor_infos.size())
+        if (labor >= 0 && size_t(labor) < labor_infos.size())
         {
             labor_infos[labor].config = *p;
             labor_infos[labor].is_exclusive = default_labor_infos[labor].is_exclusive;
@@ -594,7 +615,7 @@ static void init_state()
     }
 
     // Add default labors for those not in save
-    for (int i = 0; i < ARRAY_COUNT(default_labor_infos); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(default_labor_infos); i++) {
         if (labor_infos[i].config.isValid())
             continue;
 
@@ -648,7 +669,7 @@ static void enable_plugin(color_ostream &out)
 
     setOptionEnabled(CF_ENABLED, true);
     enable_autolabor = true;
-    out << "Enabling the plugin." << endl;
+    out << "Enabling autolabor." << endl;
 
     cleanup_state();
     init_state();
@@ -738,7 +759,13 @@ struct laborinfo_sorter
 {
     bool operator() (int i,int j)
     {
-        return labor_infos[i].mode() < labor_infos[j].mode();
+        if (labor_infos[i].mode() != labor_infos[j].mode())
+            return labor_infos[i].mode() < labor_infos[j].mode();
+        if (labor_infos[i].is_exclusive != labor_infos[j].is_exclusive)
+            return labor_infos[i].is_exclusive;
+        if (labor_infos[i].maximum_dwarfs() != labor_infos[j].maximum_dwarfs())
+            return labor_infos[i].maximum_dwarfs() < labor_infos[j].maximum_dwarfs();
+        return false;
     };
 };
 
@@ -769,6 +796,7 @@ static void assign_labor(unit_labor::unit_labor labor,
 
         int best_dwarf = 0;
         int best_value = -10000;
+        int best_skill = 0;
 
         std::vector<int> values(n_dwarfs);
         std::vector<int> candidates;
@@ -813,6 +841,9 @@ static void assign_labor(unit_labor::unit_labor labor,
                 dwarf_skill[dwarf] = skill_level;
                 dwarf_skillxp[dwarf] = skill_experience;
 
+                if (best_skill < skill_level)
+                    best_skill = skill_level;
+
                 value += skill_level * 100;
                 value += skill_experience / 20;
                 if (skill_level > 0 || skill_experience > 0)
@@ -832,6 +863,9 @@ static void assign_labor(unit_labor::unit_labor labor,
                     value += 350;
             }
 
+            if (dwarf_info[dwarf].has_exclusive_labor)
+                value -= 500;
+
             // bias by happiness
 
             //value += dwarfs[dwarf]->status.happiness;
@@ -843,14 +877,20 @@ static void assign_labor(unit_labor::unit_labor labor,
         }
 
         int pool = labor_infos[labor].talent_pool();
-        if (pool < 200 && candidates.size() > 1 && pool < candidates.size())
+        if (pool < 200 && candidates.size() > 1 && abs(pool) < candidates.size())
         {
             // Sort in descending order
             std::sort(candidates.begin(), candidates.end(), [&](const int lhs, const int rhs) -> bool {
                 if (dwarf_skill[lhs] == dwarf_skill[rhs])
-                    return dwarf_skillxp[lhs] > dwarf_skillxp[rhs];
+                    if (pool > 0)
+                        return dwarf_skillxp[lhs] > dwarf_skillxp[rhs];
+                    else
+                        return dwarf_skillxp[lhs] < dwarf_skillxp[rhs];
                 else
-                    return dwarf_skill[lhs] > dwarf_skill[rhs];
+                    if (pool > 0)
+                        return dwarf_skill[lhs] > dwarf_skill[rhs];
+                    else
+                        return dwarf_skill[lhs] < dwarf_skill[rhs];
             });
 
             // Check if all dwarves have equivalent skills, usually zero
@@ -863,8 +903,8 @@ static void assign_labor(unit_labor::unit_labor labor,
             }
             else
             {
-                // Trim down to our top talents
-                candidates.resize(pool);
+                // Trim down to our top (or not) talents
+                candidates.resize(abs(pool));
             }
         }
 
@@ -891,15 +931,28 @@ static void assign_labor(unit_labor::unit_labor labor,
         if (unit_labor::FISH == labor && !has_fishery)
             min_dwarfs = max_dwarfs = 0;
 
-        bool want_idle_dwarf = true;
-        if (state_count[IDLE] < 2)
-            want_idle_dwarf = false;
+        // If there are enough idle dwarves to choose from, enter an aggressive assignment
+        // mode. "Enough" idle dwarves is defined as 2 or 10% of the total number of dwarves,
+        // whichever is higher.
+        //
+        // In aggressive mode, we will always pick at least one idle dwarf for each skill,
+        // in order to try to get the idle dwarves to start doing something. We also pick
+        // any dwarf more preferable to the idle dwarf, since we'd rather have a more
+        // preferable dwarf do a new job if one becomes available (probably because that
+        // dwarf just finished a job).
+        //
+        // In non-aggressive mode, only dwarves that are good at a labor will be assigned
+        // to it. Dwarves good at nothing, or nothing that needs doing, will tend to get
+        // assigned to hauling by the hauler code. If there are no hauling jobs to do,
+        // they will sit around idle and when enough build up they will trigger aggressive
+        // mode again.
+        bool aggressive_mode = state_count[IDLE] >= 2 && state_count[IDLE] >= n_dwarfs * idler_pct / 100;
 
         /*
          * Assign dwarfs to this labor. We assign at least the minimum number of dwarfs, in
          * order of preference, and then assign additional dwarfs that meet any of these conditions:
-         * - The dwarf is idle and there are no idle dwarves assigned to this labor
-         * - The dwarf has nonzero skill associated with the labor
+         * - We are in aggressive mode and have not yet assigned an idle dwarf
+         * - The dwarf is good at this skill
          * - The labor is mining, hunting, or woodcutting and the dwarf currently has it enabled.
          * We stop assigning dwarfs when we reach the maximum allowed.
          * Note that only idle and busy dwarfs count towards the number of dwarfs. "Other" dwarfs
@@ -907,34 +960,34 @@ static void assign_labor(unit_labor::unit_labor labor,
          * Military and children/nobles will not have labors assigned.
          * Dwarfs with the "health management" responsibility are always assigned DIAGNOSIS.
          */
-        for (int i = 0; i < candidates.size() && labor_infos[labor].active_dwarfs < max_dwarfs; i++)
+        for (size_t i = 0; i < candidates.size() && labor_infos[labor].active_dwarfs < max_dwarfs; i++)
         {
             int dwarf = candidates[i];
 
-            assert(dwarf >= 0);
-            assert(dwarf < n_dwarfs);
-
-            bool preferred_dwarf = false;
-            if (want_idle_dwarf && dwarf_info[dwarf].state == IDLE)
-                preferred_dwarf = true;
-            if (dwarf_skill[dwarf] > 0)
-                preferred_dwarf = true;
-            if (previously_enabled[dwarf] && labor_infos[labor].is_exclusive)
-                preferred_dwarf = true;
-            if (dwarf_info[dwarf].medical && labor == df::unit_labor::DIAGNOSE)
-                preferred_dwarf = true;
             if (dwarf_info[dwarf].trader && trader_requested)
                 continue;
             if (dwarf_info[dwarf].diplomacy)
                 continue;
 
-            if (labor_infos[labor].active_dwarfs >= min_dwarfs && !preferred_dwarf)
+            assert(dwarf >= 0);
+            assert(dwarf < n_dwarfs);
+
+            bool preferred_dwarf = false;
+            if (dwarf_skillxp[dwarf] > 0 && dwarf_skill[dwarf] >= best_skill / 2)
+                preferred_dwarf = true;
+            if (previously_enabled[dwarf] && labor_infos[labor].is_exclusive && dwarf_info[dwarf].state == EXCLUSIVE)
+                preferred_dwarf = true;
+            if (dwarf_info[dwarf].medical && labor == df::unit_labor::DIAGNOSE)
+                preferred_dwarf = true;
+
+            if (labor_infos[labor].active_dwarfs >= min_dwarfs && !preferred_dwarf && !aggressive_mode)
                 continue;
 
             if (!dwarfs[dwarf]->status.labors[labor])
                 dwarf_info[dwarf].assigned_jobs++;
 
-            dwarfs[dwarf]->status.labors[labor] = true;
+            if (Units::isValidLabor(dwarfs[dwarf], labor))
+                dwarfs[dwarf]->status.labors[labor] = true;
 
             if (labor_infos[labor].is_exclusive)
             {
@@ -946,11 +999,11 @@ static void assign_labor(unit_labor::unit_labor labor,
             if (print_debug)
                 out.print("Dwarf %i \"%s\" assigned %s: value %i %s %s\n", dwarf, dwarfs[dwarf]->name.first_name.c_str(), ENUM_KEY_STR(unit_labor, labor).c_str(), values[dwarf], dwarf_info[dwarf].trader ? "(trader)" : "", dwarf_info[dwarf].diplomacy ? "(diplomacy)" : "");
 
-            if (dwarf_info[dwarf].state == IDLE || dwarf_info[dwarf].state == BUSY)
+            if (dwarf_info[dwarf].state == IDLE || dwarf_info[dwarf].state == BUSY || dwarf_info[dwarf].state == EXCLUSIVE)
                 labor_infos[labor].active_dwarfs++;
 
             if (dwarf_info[dwarf].state == IDLE)
-                want_idle_dwarf = false;
+                aggressive_mode = false;
         }
 }
 
@@ -995,7 +1048,7 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
     bool has_fishery = false;
     bool trader_requested = false;
 
-    for (int i = 0; i < world->buildings.all.size(); ++i)
+    for (size_t i = 0; i < world->buildings.all.size(); ++i)
     {
         df::building *build = world->buildings.all[i];
         auto type = build->getType();
@@ -1021,7 +1074,7 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
         }
     }
 
-    for (int i = 0; i < world->units.active.size(); ++i)
+    for (size_t i = 0; i < world->units.active.size(); ++i)
     {
         df::unit* cre = world->units.active[i];
         if (Units::isCitizen(cre))
@@ -1043,8 +1096,6 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
 
     for (int dwarf = 0; dwarf < n_dwarfs; dwarf++)
     {
-        dwarf_info[dwarf].single_labor = -1;
-
         if (dwarfs[dwarf]->status.souls.size() <= 0)
             continue;
 
@@ -1054,7 +1105,7 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
 
         df::historical_figure* hf = df::historical_figure::find(dwarfs[dwarf]->hist_figure_id);
         if(hf!=NULL) //can be NULL. E.g. script created citizens
-        for (int i = 0; i < hf->entity_links.size(); i++)
+        for (size_t i = 0; i < hf->entity_links.size(); i++)
         {
             df::histfig_entity_link* hfelink = hf->entity_links.at(i);
             if (hfelink->getType() == df::histfig_entity_link_type::POSITION)
@@ -1089,7 +1140,7 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
 
         // identify dwarfs who are needed for meetings and mark them for exclusion
 
-        for (int i = 0; i < ui->activities.size(); ++i)
+        for (size_t i = 0; i < ui->activities.size(); ++i)
         {
             df::activity_info *act = ui->activities[i];
             if (!act) continue;
@@ -1151,14 +1202,6 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
 
     for (int dwarf = 0; dwarf < n_dwarfs; dwarf++)
     {
-        bool is_on_break = false;
-
-        for (auto p = dwarfs[dwarf]->status.misc_traits.begin(); p < dwarfs[dwarf]->status.misc_traits.end(); p++)
-        {
-            if ((*p)->id == misc_trait_type::Migrant || (*p)->id == misc_trait_type::OnBreak)
-                is_on_break = true;
-        }
-
         if (Units::isBaby(dwarfs[dwarf]) ||
             Units::isChild(dwarfs[dwarf]) ||
             dwarfs[dwarf]->profession == profession::DRUNK)
@@ -1169,7 +1212,7 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
             dwarf_info[dwarf].state = MILITARY;
         else if (dwarfs[dwarf]->job.current_job == NULL)
         {
-            if (is_on_break)
+            if (Units::getMiscTrait(dwarfs[dwarf], misc_trait_type::Migrant))
                 dwarf_info[dwarf].state = OTHER;
             else if (dwarfs[dwarf]->specific_refs.size() > 0)
                 dwarf_info[dwarf].state = OTHER;
@@ -1179,7 +1222,7 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
         else
         {
             int job = dwarfs[dwarf]->job.current_job->job_type;
-            if (job >= 0 && job < ARRAY_COUNT(dwarf_states))
+            if (job >= 0 && size_t(job) < ARRAY_COUNT(dwarf_states))
                 dwarf_info[dwarf].state = dwarf_states[job];
             else
             {
@@ -1208,7 +1251,9 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
     laborinfo_sorter lasorter;
     std::sort(labors.begin(), labors.end(), lasorter);
 
-    // Handle DISABLED skills (just bookkeeping)
+    // Handle DISABLED skills (just bookkeeping).
+    // Note that autolabor should *NEVER* enable or disable a skill that has been marked as DISABLED, for any reason.
+    // The user has told us that they want manage this skill manually, and we must respect that.
     for (auto lp = labors.begin(); lp != labors.end(); ++lp)
     {
         auto labor = *lp;
@@ -1218,12 +1263,6 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
 
         for (int dwarf = 0; dwarf < n_dwarfs; dwarf++)
         {
-            if ((dwarf_info[dwarf].trader && trader_requested) ||
-                dwarf_info[dwarf].diplomacy)
-            {
-                dwarfs[dwarf]->status.labors[labor] = false;
-            }
-
             if (dwarfs[dwarf]->status.labors[labor])
             {
                 if (labor_infos[labor].is_exclusive)
@@ -1246,7 +1285,7 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
     // Set about 1/3 of the dwarfs as haulers. The haulers have all HAULER labors enabled. Having a lot of haulers helps
     // make sure that hauling jobs are handled quickly rather than building up.
 
-    int num_haulers = state_count[IDLE] + state_count[BUSY] * hauler_pct / 100;
+    int num_haulers = state_count[IDLE] + (state_count[BUSY] + state_count[EXCLUSIVE]) * hauler_pct / 100;
 
     if (num_haulers < 1)
         num_haulers = 1;
@@ -1265,10 +1304,14 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
                     continue;
                 dwarfs[dwarf]->status.labors[labor] = false;
             }
+            if (dwarf_info[dwarf].state == IDLE || dwarf_info[dwarf].state == BUSY || dwarf_info[dwarf].state == EXCLUSIVE)
+            {
+                num_haulers--;
+            }
             continue;
         }
 
-        if (dwarf_info[dwarf].state == IDLE || dwarf_info[dwarf].state == BUSY)
+        if (dwarf_info[dwarf].state == IDLE || dwarf_info[dwarf].state == BUSY || dwarf_info[dwarf].state == EXCLUSIVE)
             hauler_ids.push_back(dwarf);
     }
     dwarfinfo_sorter sorter(dwarf_info);
@@ -1290,7 +1333,7 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
 
         for (int i = 0; i < num_haulers; i++)
         {
-            assert(i < hauler_ids.size());
+            assert(size_t(i) < hauler_ids.size());
 
             int dwarf = hauler_ids[i];
 
@@ -1299,14 +1342,14 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
             dwarfs[dwarf]->status.labors[labor] = true;
             dwarf_info[dwarf].assigned_jobs++;
 
-            if (dwarf_info[dwarf].state == IDLE || dwarf_info[dwarf].state == BUSY)
+            if (dwarf_info[dwarf].state == IDLE || dwarf_info[dwarf].state == BUSY || dwarf_info[dwarf].state == EXCLUSIVE)
                 labor_infos[labor].active_dwarfs++;
 
             if (print_debug)
                 out.print("Dwarf %i \"%s\" assigned %s: hauler\n", dwarf, dwarfs[dwarf]->name.first_name.c_str(), ENUM_KEY_STR(unit_labor, labor).c_str());
         }
 
-        for (int i = num_haulers; i < hauler_ids.size(); i++)
+        for (size_t i = num_haulers; i < hauler_ids.size(); i++)
         {
             assert(i < hauler_ids.size());
 
@@ -1444,9 +1487,9 @@ command_result autolabor (color_ostream &out, std::vector <std::string> & parame
         if (parameters.size() == 4)
             pool = std::stoi(parameters[3]);
 
-        if (maximum < minimum || maximum < 0 || minimum < 0 || pool < 0)
+        if (maximum < minimum || maximum < 0 || minimum < 0)
         {
-            out.printerr("Syntax: autolabor <labor> <minimum> [<maximum>] [<talent pool>]\n", maximum, minimum);
+            out.printerr("Syntax: autolabor <labor> <minimum> [<maximum>] [<talent pool>], %d > %d\n", maximum, minimum);
             return CR_WRONG_USAGE;
         }
 
@@ -1466,14 +1509,14 @@ command_result autolabor (color_ostream &out, std::vector <std::string> & parame
             return CR_FAILURE;
         }
 
-        for (int i = 0; i < labor_infos.size(); i++)
+        for (size_t i = 0; i < labor_infos.size(); i++)
         {
             reset_labor((df::unit_labor) i);
         }
         out << "All labors reset." << endl;
         return CR_OK;
     }
-    else if (parameters.size() == 1 && parameters[0] == "list" || parameters[0] == "status")
+    else if (parameters.size() == 1 && (parameters[0] == "list" || parameters[0] == "status"))
     {
         if (!enable_autolabor)
         {

@@ -109,6 +109,10 @@ function Pages:getSelected()
     return self.selected, self.subviews[self.selected]
 end
 
+function Pages:getSelectedPage()
+    return self.subviews[self.selected]
+end
+
 ----------------
 -- Edit field --
 ----------------
@@ -121,6 +125,7 @@ EditField.ATTRS{
     on_char = DEFAULT_NIL,
     on_change = DEFAULT_NIL,
     on_submit = DEFAULT_NIL,
+    key = DEFAULT_NIL,
 }
 
 function EditField:onRenderBody(dc)
@@ -131,8 +136,14 @@ function EditField:onRenderBody(dc)
         cursor = ' '
     end
     local txt = self.text .. cursor
-    if #txt > dc.width then
-        txt = string.char(27)..string.sub(txt, #txt-dc.width+2)
+    local dx = dc.x
+    if self.key then
+        dc:key_string(self.key, '')
+    end
+    dx = dc.x - dx
+    local max_width = dc.width - dx
+    if #txt > max_width then
+        txt = string.char(27)..string.sub(txt, #txt-max_width+2)
     end
     dc:string(txt)
 end
@@ -248,16 +259,17 @@ function render_text(obj,dc,x0,y0,pen,dpen,disabled)
 
             if token.text or token.key then
                 local text = ''..(getval(token.text) or '')
-                local keypen
+                local keypen = dfhack.pen.parse(token.key_pen or COLOR_LIGHTGREEN)
 
                 if dc then
                     local tpen = getval(token.pen)
                     if disabled or is_disabled(token) then
                         dc:pen(getval(token.dpen) or tpen or dpen)
-                        keypen = COLOR_GREEN
+                        if keypen.fg ~= COLOR_BLACK then
+                            keypen.bold = false
+                        end
                     else
                         dc:pen(tpen or pen)
-                        keypen = COLOR_LIGHTGREEN
                     end
                 end
 
@@ -330,15 +342,21 @@ Label = defclass(Label, Widget)
 
 Label.ATTRS{
     text_pen = COLOR_WHITE,
-    text_dpen = COLOR_DARKGREY,
+    text_dpen = COLOR_DARKGREY, -- disabled
+    text_hpen = DEFAULT_NIL, -- highlight - default is text_pen with reversed brightness
     disabled = DEFAULT_NIL,
     enabled = DEFAULT_NIL,
     auto_height = true,
     auto_width = false,
+    on_click = DEFAULT_NIL,
+    on_rclick = DEFAULT_NIL,
 }
 
 function Label:init(args)
     self:setText(args.text)
+    if not self.text_hpen then
+        self.text_hpen = ((tonumber(self.text_pen) or tonumber(self.text_pen.fg) or 0) + 8) % 16
+    end
 end
 
 function Label:setText(text)
@@ -374,11 +392,21 @@ function Label:getTextWidth()
 end
 
 function Label:onRenderBody(dc)
-    render_text(self,dc,0,0,self.text_pen,self.text_dpen,is_disabled(self))
+    local text_pen = self.text_pen
+    if self:getMousePos() and (self.on_click or self.on_rclick) then
+        text_pen = self.text_hpen
+    end
+    render_text(self,dc,0,0,text_pen,self.text_dpen,is_disabled(self))
 end
 
 function Label:onInput(keys)
     if not is_disabled(self) then
+        if keys._MOUSE_L_DOWN and self:getMousePos() and self.on_click then
+            self:on_click()
+        end
+        if keys._MOUSE_R_DOWN and self:getMousePos() and self.on_rclick then
+            self:on_rclick()
+        end
         return check_text_keys(self, keys)
     end
 end
@@ -428,15 +456,17 @@ function List:init(info)
 end
 
 function List:setChoices(choices, selected)
-    self.choices = choices or {}
+    self.choices = {}
 
-    for i,v in ipairs(self.choices) do
+    for i,v in ipairs(choices or {}) do
+        local l = utils.clone(v);
         if type(v) ~= 'table' then
-            v = { text = v }
-            self.choices[i] = v
+            l = { text = v }
+        else
+            l.text = v.text or v.caption or v[1]
         end
-        v.text = v.text or v.caption or v[1]
-        parse_label_text(v)
+        parse_label_text(l)
+        self.choices[i] = l
     end
 
     self:setSelected(selected)
@@ -540,6 +570,7 @@ function List:onRenderBody(dc)
         local current = (i == self.selected)
         local cur_pen = self.cursor_pen
         local cur_dpen = self.text_pen
+        local active_pen = current and cur_pen or cur_dpen
 
         if not self.active then
             cur_pen = self.inactive_pen or self.cursor_pen
@@ -549,7 +580,7 @@ function List:onRenderBody(dc)
         local icon = getval(obj.icon)
 
         if iw and icon then
-            dc:seek(0, y)
+            dc:seek(0, y):pen(active_pen)
             paint_icon(icon, obj)
         end
 
@@ -565,7 +596,7 @@ function List:onRenderBody(dc)
         end
 
         if icon and not iw then
-            dc:seek(ip-1,y)
+            dc:seek(ip-1,y):pen(active_pen)
             paint_icon(icon, obj)
         end
     end
@@ -627,6 +658,7 @@ FilteredList = defclass(FilteredList, Widget)
 
 FilteredList.ATTRS {
     edit_below = false,
+    edit_key = DEFAULT_NIL,
 }
 
 function FilteredList:init(info)
@@ -635,6 +667,8 @@ function FilteredList:init(info)
         frame = { l = info.icon_width, t = 0, h = 1 },
         on_change = self:callback('onFilterChange'),
         on_char = self:callback('onFilterChar'),
+        key = self.edit_key,
+        active = (self.edit_key == nil),
     }
     self.list = List{
         frame = { t = 2 },
@@ -679,8 +713,22 @@ function FilteredList:init(info)
     end
 end
 
+function FilteredList:onInput(keys)
+    if self.edit_key and keys[self.edit_key] and not self.edit.active then
+        self.edit.active = true
+    elseif keys.LEAVESCREEN and self.edit.active then
+        self.edit.active = false
+    else
+        self:inputToSubviews(keys)
+    end
+end
+
 function FilteredList:getChoices()
     return self.choices
+end
+
+function FilteredList:getVisibleChoices()
+    return self.list.choices
 end
 
 function FilteredList:setChoices(choices, pos)

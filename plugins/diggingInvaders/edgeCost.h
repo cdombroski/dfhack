@@ -56,7 +56,7 @@ public:
         cost = -1;
     }
     Edge(const Edge& e): p1(e.p1), p2(e.p2), cost(e.cost) {
-        
+
     }
     Edge(df::coord p1In, df::coord p2In, cost_t costIn): cost(costIn) {
         if ( p2In < p1In ) {
@@ -93,6 +93,6 @@ struct PointHash {
     }
 };
 
-cost_t getEdgeCost(color_ostream& out, df::coord pt1, df::coord pt2, DigAbilities& abilities);
-std::vector<Edge>* getEdgeSet(color_ostream &out, df::coord point, MapExtras::MapCache& cache, int32_t xMax, int32_t yMax, int32_t zMax, DigAbilities& abilities);
+cost_t getEdgeCost(DFHack::color_ostream& out, df::coord pt1, df::coord pt2, DigAbilities& abilities);
+std::vector<Edge>* getEdgeSet(DFHack::color_ostream &out, df::coord point, MapExtras::MapCache& cache, int32_t xMax, int32_t yMax, int32_t zMax, DigAbilities& abilities);
 

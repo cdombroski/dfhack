@@ -29,7 +29,7 @@ DFhackCExport command_result plugin_init(color_ostream& out, std::vector<PluginC
     if (!process_jobs || !process_dig)
         return CR_FAILURE;
 
-    commands.push_back(PluginCommand("workNow", "makes dwarves look for jobs whever they finish one, or every time you pause", workNow, false, "When workNow is active, every time the game pauses, DF will make dwarves perform any appropriate available jobs. This includes when you one step through the game using the pause menu. When workNow is in mode 2, it will make dwarves look for jobs every time a job completes.\n"
+    commands.push_back(PluginCommand("workNow", "Don't allow dwarves to idle if any jobs are available", workNow, false, "When workNow is active, every time the game pauses, DF will make dwarves perform any appropriate available jobs. This includes when you one step through the game using the pause menu. When workNow is in mode 2, it will make dwarves look for jobs every time a job completes.\n"
                 "workNow\n"
                 "  print workNow status\n"
                 "workNow 0\n"
@@ -39,7 +39,7 @@ DFhackCExport command_result plugin_init(color_ostream& out, std::vector<PluginC
                 "workNow 2\n"
                 "  make dwarves look for jobs whenever a job completes\n"
     ));
-    
+
     return CR_OK;
 }
 
@@ -57,10 +57,10 @@ DFhackCExport command_result plugin_onstatechange(color_ostream &out, state_chan
     }
     if ( e != DFHack::SC_PAUSED )
         return CR_OK;
-    
+
     *process_jobs = true;
     *process_dig  = true;
-    
+
     return CR_OK;
 }
 
@@ -73,7 +73,7 @@ DFhackCExport command_result workNow(color_ostream& out, vector<string>& paramet
         return CR_WRONG_USAGE;
     }
     int32_t a = atoi(parameters[0].c_str());
-    
+
     if (a < 0 || a > 2)
         return CR_WRONG_USAGE;
 
@@ -92,7 +92,7 @@ DFhackCExport command_result workNow(color_ostream& out, vector<string>& paramet
 void jobCompletedHandler(color_ostream& out, void* ptr) {
     if ( mode < 2 )
         return;
-    
+
     *process_jobs = true;
     *process_dig = true;
 }

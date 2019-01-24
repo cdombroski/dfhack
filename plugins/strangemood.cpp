@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include "Console.h"
+#include "DataDefs.h"
 #include "Export.h"
 #include "PluginManager.h"
 #include "modules/Gui.h"
@@ -11,21 +12,24 @@
 #include "modules/Translation.h"
 #include "modules/Random.h"
 
-#include "DataDefs.h"
+#include "df/builtin_mats.h"
+#include "df/caste_raw.h"
+#include "df/caste_raw_flags.h"
+#include "df/creature_raw.h"
 #include "df/d_init.h"
-#include "df/world.h"
-#include "df/ui.h"
-#include "df/unit.h"
-#include "df/unit_soul.h"
-#include "df/unit_skill.h"
-#include "df/unit_preference.h"
-#include "df/map_block.h"
+#include "df/entity_raw.h"
+#include "df/general_ref_unit_workerst.h"
+#include "df/historical_entity.h"
 #include "df/job.h"
 #include "df/job_item.h"
-#include "df/historical_entity.h"
-#include "df/entity_raw.h"
-#include "df/builtin_mats.h"
-#include "df/general_ref_unit_workerst.h"
+#include "df/map_block.h"
+#include "df/ui.h"
+#include "df/unit.h"
+#include "df/unit_preference.h"
+#include "df/unit_relationship_type.h"
+#include "df/unit_skill.h"
+#include "df/unit_soul.h"
+#include "df/world.h"
 
 using std::string;
 using std::vector;
@@ -55,6 +59,8 @@ bool isUnitMoodable (df::unit *unit)
     if (unit->mood != mood_type::None)
         return false;
     if (!ENUM_ATTR(profession,moodable,unit->profession))
+        return false;
+    if (!Units::casteFlagSet(unit->race, unit->caste, caste_raw_flags::STRANGE_MOODS))
         return false;
     return true;
 }
@@ -100,15 +106,17 @@ df::job_skill getMoodSkill (df::unit *unit)
             if (skill->rating == level)
                 skills.push_back(skill->id);
             break;
+        default:
+            break;
         }
     }
     if (!skills.size() && civ)
     {
-        if (civ->entity_raw->jobs.permitted_skill[job_skill::WOODCRAFT])
+        if (civ->resources.permitted_skill[job_skill::WOODCRAFT])
             skills.push_back(job_skill::WOODCRAFT);
-        if (civ->entity_raw->jobs.permitted_skill[job_skill::STONECRAFT])
+        if (civ->resources.permitted_skill[job_skill::STONECRAFT])
             skills.push_back(job_skill::STONECRAFT);
-        if (civ->entity_raw->jobs.permitted_skill[job_skill::BONECARVE])
+        if (civ->resources.permitted_skill[job_skill::BONECARVE])
             skills.push_back(job_skill::BONECARVE);
     }
     if (!skills.size())
@@ -169,7 +177,7 @@ void generateName(df::language_name &output, int language, int mode, const df::l
                 int32_t word; df::enum_field<df::part_of_speech,int16_t> part;
                 output.first_name.clear();
                 selectWord(table1, word, part, 2);
-                if (word >= 0 && word < world->raws.language.words.size())
+                if (word >= 0 && size_t(word) < world->raws.language.words.size())
                     output.first_name = *world->raws.language.translations[language]->words[word];
             }
             if (mode != 10)
@@ -574,9 +582,9 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
             df::unit *cur = moodable_units[i];
             if (cur->flags1.bits.had_mood)
                 continue;
-            if (cur->relations.dragger_id != -1)
+            if (cur->relationship_ids[df::unit_relationship_type::Dragger] != -1)
                 continue;
-            if (cur->relations.draggee_id != -1)
+            if (cur->relationship_ids[df::unit_relationship_type::Draggee] != -1)
                 continue;
             tickets.push_back(i);
             for (int j = 0; j < 5; j++)
@@ -610,6 +618,8 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
                 for (int j = 0; j < 15; j++)
                     tickets.push_back(i);
                 break;
+            default:
+                break;
             }
         }
         if (!tickets.size())
@@ -628,7 +638,7 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
         out.printerr("Chosen unit '%s' has active job, cannot start mood!\n", Translation::TranslateName(&unit->name, false).c_str());
         return CR_FAILURE;
     }
-    
+
     ui->mood_cooldown = 1000;
     // If no mood type was specified, pick one randomly
     if (type == mood_type::None)
@@ -694,9 +704,9 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
     }
 
     unit->mood = type;
-    unit->relations.mood_copy = unit->mood;
+    unit->mood_copy = unit->mood;
     Gui::showAutoAnnouncement(announcement_type::STRANGE_MOOD, unit->pos, msg, color, bright);
-    
+
     // TODO: make sure unit drops any wrestle items
     unit->job.mood_timeout = 50000;
     unit->flags1.bits.has_mood = true;
@@ -728,6 +738,8 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
         case job_skill::WOODCRAFT:
         case job_skill::STONECRAFT:
         case job_skill::BONECARVE:
+        case job_skill::PAPERMAKING:    // These aren't actually moodable skills
+        case job_skill::BOOKBINDING:    // but the game still checks for them anyways
             job->job_type = job_type::StrangeMoodCrafter;
             break;
         case job_skill::TANNER:
@@ -756,6 +768,8 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
             break;
         case job_skill::MECHANICS:
             job->job_type = job_type::StrangeMoodMechanics;
+            break;
+        default:
             break;
         }
     }
@@ -861,6 +875,8 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
         case job_skill::CARPENTRY:
         case job_skill::WOODCRAFT:
         case job_skill::BOWYER:
+        case job_skill::PAPERMAKING:
+        case job_skill::BOOKBINDING:
             job->job_items.push_back(item = new df::job_item());
             item->item_type = item_type::WOOD;
             item->quantity = base_item_count;
@@ -876,10 +892,10 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
         case job_skill::WEAVING:
         case job_skill::CLOTHESMAKING:
             filter = NULL;
-            // TODO: do proper search through world->items.other[items_other_id::ANY_GENERIC35] for item_type CLOTH, mat_type 0, flags2.deep_material, and min_dimension 10000
-            for (size_t i = 0; i < world->items.other[items_other_id::ANY_GENERIC35].size(); i++)
+            // TODO: do proper search through world->items.other[items_other_id::ANY_GENERIC36] for item_type CLOTH, mat_type 0, flags2.deep_material, and min_dimension 10000
+            for (size_t i = 0; i < world->items.other[items_other_id::ANY_GENERIC36].size(); i++)
             {
-                filter = world->items.other[items_other_id::ANY_GENERIC35][i];
+                filter = world->items.other[items_other_id::ANY_GENERIC36][i];
                 if (filter->getType() != item_type::CLOTH)
                 {
                     filter = NULL;
@@ -901,6 +917,7 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
                     filter = NULL;
                     continue;
                 }
+                break;
             }
             if (filter)
             {
@@ -960,13 +977,14 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
 
         case job_skill::FORGE_WEAPON:
         case job_skill::FORGE_ARMOR:
+            // there are actually 2 distinct cases here, but they're identical
         case job_skill::FORGE_FURNITURE:
         case job_skill::METALCRAFT:
             filter = NULL;
-            // TODO: do proper search through world->items.other[items_other_id::ANY_GENERIC35] for item_type BAR, mat_type 0, and flags2.deep_material
-            for (size_t i = 0; i < world->items.other[items_other_id::ANY_GENERIC35].size(); i++)
+            // TODO: do proper search through world->items.other[items_other_id::ANY_GENERIC36] for item_type BAR, mat_type 0, and flags2.deep_material
+            for (size_t i = 0; i < world->items.other[items_other_id::ANY_GENERIC36].size(); i++)
             {
-                filter = world->items.other[items_other_id::ANY_GENERIC35][i];
+                filter = world->items.other[items_other_id::ANY_GENERIC36][i];
                 if (filter->getType() != item_type::BAR)
                 {
                     filter = NULL;
@@ -983,6 +1001,7 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
                     filter = NULL;
                     continue;
                 }
+                break;
             }
             if (filter)
             {
@@ -990,7 +1009,7 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
                 item->item_type = item_type::BAR;
                 item->mat_type = filter->getMaterial();
                 item->mat_index = filter->getMaterialIndex();
-                item->quantity = base_item_count * 150;
+                item->quantity = base_item_count * 150; // BUGFIX - the game does not adjust here!
                 item->min_dimension = 150;
             }
             else
@@ -1012,7 +1031,7 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
                 }
                 if (mats.size())
                     item->mat_index = mats[rng.df_trandom(mats.size())];
-                item->quantity = base_item_count * 150;
+                item->quantity = base_item_count * 150; // BUGFIX - the game does not adjust here!
                 item->min_dimension = 150;
             }
             break;
@@ -1098,6 +1117,8 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
             }
             item->quantity = base_item_count;
             break;
+        default:
+            break;
         }
     }
 
@@ -1144,8 +1165,10 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
         case job_skill::GLASSMAKER:
             avoid_glass = 1;
             break;
+        default:
+            break;
         }
-        for (size_t i = 0; i < extra_items; i++)
+        for (int i = 0; i < extra_items; i++)
         {
             if ((job->job_type == job_type::StrangeMoodBrooding) && (rng.df_trandom(2)))
             {
@@ -1264,12 +1287,12 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
                 item->quantity = 1;
                 if (item_type == item_type::BAR)
                 {
-                    item->quantity *= 150;
+                    item->quantity *= 150; // BUGFIX - the game does not adjust here!
                     item->min_dimension = 150;
                 }
                 if (item_type == item_type::CLOTH)
                 {
-                    item->quantity *= 10000;
+                    item->quantity *= 10000; // BUGFIX - the game does not adjust here!
                     item->min_dimension = 10000;
                 }
             }
@@ -1306,7 +1329,7 @@ command_result df_strangemood (color_ostream &out, vector <string> & parameters)
 
 DFhackCExport command_result plugin_init (color_ostream &out, std::vector<PluginCommand> &commands)
 {
-    commands.push_back(PluginCommand("strangemood", "Force a strange mood to happen.\n", df_strangemood, false,
+    commands.push_back(PluginCommand("strangemood", "Force a strange mood to happen.", df_strangemood, false,
         "Options:\n"
          "  -force         - Ignore standard mood preconditions.\n"
          "  -unit          - Use the selected unit instead of picking one randomly.\n"

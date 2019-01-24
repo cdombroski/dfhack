@@ -6,43 +6,7 @@ module DFHack
         # with an argument that respond to x/y/z (eg cursor), find first unit at this position
         def unit_find(what=:selected, y=nil, z=nil)
             if what == :selected
-                case curview._rtti_classname
-                when :viewscreen_itemst
-                    ref = curview.entry_ref[curview.cursor_pos]
-                    ref.unit_tg if ref.kind_of?(GeneralRefUnit)
-                when :viewscreen_unitlistst
-                    v = curview
-                    v.units[v.page][v.cursor_pos[v.page]]
-                when :viewscreen_petst
-                    v = curview
-                    case v.mode
-                    when :List
-                        v.animal[v.cursor].unit if !v.is_vermin[v.cursor]
-                    when :SelectTrainer
-                        v.trainer_unit[v.trainer_cursor]
-                    end
-                when :viewscreen_dwarfmodest
-                    case ui.main.mode
-                    when :ViewUnits
-                        # nobody selected => idx == 0
-                        v = world.units.active[ui_selected_unit]
-                        v if v and v.pos.z == cursor.z
-                    when :LookAround
-                        k = ui_look_list.items[ui_look_cursor]
-                        k.unit if k.type == :Unit
-                    else
-                        ui.follow_unit_tg if ui.follow_unit != -1
-                    end
-                when :viewscreen_dungeonmodest
-                    case ui_advmode.menu
-                    when :Default
-                        world.units.active[0]
-                    else
-                        unit_find(cursor)   # XXX
-                    end
-                when :viewscreen_dungeon_monsterstatusst
-                    curview.unit
-                end
+                return world.units.all.binsearch(df.get_selected_unit_id)
             elsif what.kind_of?(Integer)
                 # search by id
                 return world.units.all.binsearch(what) if not z
@@ -58,7 +22,7 @@ module DFHack
 
         # returns an Array of all units that are current fort citizen (dwarves, on map, not hostile)
         def unit_citizens
-            world.units.active.find_all { |u| 
+            world.units.active.find_all { |u|
                 unit_iscitizen(u)
             }
         end
@@ -93,8 +57,9 @@ module DFHack
         def unit_category(u)
             return if u.flags1.left or u.flags1.incoming
             # return if hostile & unit_invisible(u) (hidden_in_ambush or caged+mapblock.hidden or caged+holder.ambush
-            return :Dead if u.flags1.dead
+            return :Dead if u.flags2.killed
             return :Dead if u.flags3.ghostly # hostile ?
+            return if u.flags1.inactive
             return :Others if !unit_isfortmember(u)
             casteflags = u.race_tg.caste[u.caste].flags if u.caste >= 0
             return :Livestock if casteflags and (casteflags[:PET] or casteflags[:PET_EXOTIC])
@@ -168,7 +133,7 @@ module DFHack
         # returns if an unit is openly hostile
         # does not include ghosts / wildlife
         def unit_ishostile(u)
-            # return true if u.flags3.ghostly and not u.flags1.dead
+            # return true if u.flags3.ghostly and not u.flags1.inactive
             return unless unit_category(u) == :Others
 
             case unit_other_category(u)
@@ -178,7 +143,7 @@ module DFHack
 
             when :Unsure
                 # from df code, with removed duplicate checks already in other_category
-                return true if u.enemy.undead or u.flags3.ghostly or u.flags1.marauder 
+                return true if u.enemy.undead or u.flags3.ghostly or u.flags1.marauder
                 return false if u.flags1.forest or u.flags1.merchant or u.flags1.diplomat or u.flags2.visitor
                 return true if u.flags1.tame or u.flags2.underworld
 
@@ -282,13 +247,13 @@ module DFHack
         def unit_isidler(u)
             unit_isworker(u) and
             # current_job includes eat/drink/sleep/pickupequip
-            !u.job.current_job and 
+            !u.job.current_job and
             # filter 'attend meeting'
             not u.specific_refs.find { |s| s.type == :ACTIVITY } and
             # filter soldiers (TODO check schedule)
             u.military.squad_id == -1 and
-            # filter 'on break'
-            not u.status.misc_traits.find { |t| t.id == :OnBreak }
+            # filter incoming migrants
+            not u.status.misc_traits.find { |t| t.id == :Migrant }
         end
 
         def unit_entitypositions(unit)

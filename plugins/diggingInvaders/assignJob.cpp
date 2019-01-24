@@ -20,6 +20,7 @@
 #include "df/item_type.h"
 #include "df/item_weaponst.h"
 #include "df/job.h"
+#include "df/job_list_link.h"
 #include "df/job_skill.h"
 #include "df/job_type.h"
 #include "df/reaction_product_itemst.h"
@@ -27,7 +28,10 @@
 #include "df/ui.h"
 #include "df/unit.h"
 #include "df/unit_inventory_item.h"
+#include "df/world.h"
 #include "df/world_site.h"
+
+using namespace DFHack;
 
 void getRidOfOldJob(df::unit* unit) {
     if ( unit->job.current_job == NULL ) {
@@ -53,7 +57,7 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
     if ( !firstInvader ) {
         return -1;
     }
-    
+
     //do whatever you need to do at the first important edge
     df::coord pt1 = firstImportantEdge.p1;
     df::coord pt2 = firstImportantEdge.p2;
@@ -63,14 +67,12 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
         pt2 = temp;
     }
     //out.print("first important edge: (%d,%d,%d) -> (%d,%d,%d)\n", pt1.x,pt1.y,pt1.z, pt2.x,pt2.y,pt2.z);
-    
-    int32_t jobId = -1;
-    
+
     df::map_block* block1 = Maps::getTileBlock(pt1);
     df::map_block* block2 = Maps::getTileBlock(pt2);
     bool passable1 = block1->walkable[pt1.x&0xF][pt1.y&0xF];
     bool passable2 = block2->walkable[pt2.x&0xF][pt2.y&0xF];
-    
+
     df::coord location;
     df::building* building = Buildings::findAtTile(pt2);
     df::coord buildingPos = pt2;
@@ -107,7 +109,6 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
         building->jobs.clear();
         building->jobs.push_back(job);
         Job::linkIntoWorld(job);
-        jobId = job->id;
         job->completion_timer = abilities.jobDelay[CostDimension::DestroyBuilding];
     } else {
         df::tiletype* type1 = Maps::getTileType(pt1);
@@ -132,7 +133,6 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
             firstInvader->job.hunt_target = NULL;
             firstInvader->job.destroy_target = NULL;
             Job::linkIntoWorld(job);
-            jobId = job->id;
             df::construction* constr = df::construction::find(pt2);
             bool smooth = constr != NULL && constr->item_type != df::enums::item_type::BOULDER;
             if ( smooth )
@@ -200,9 +200,8 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
             firstInvader->path.path.y.clear();
             firstInvader->path.path.z.clear();
             Job::linkIntoWorld(job);
-            jobId = job->id;
             job->completion_timer = abilities.jobDelay[CostDimension::Dig];
-            
+
             //TODO: test if he already has a pick
             bool hasPick = false;
             for ( size_t a = 0; a < firstInvader->inventory.size(); a++ ) {
@@ -219,10 +218,10 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
                 hasPick = true;
                 break;
             }
-            
+
             if ( hasPick )
                 return firstInvader->id;
-            
+
             //create and give a pick
             //based on createitem.cpp
             df::reaction_product_itemst *prod = NULL;
@@ -240,7 +239,7 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
                 out.print("%s, %d: no valid item.\n", __FILE__, __LINE__);
                 return -1;
             }
-            
+
             DFHack::MaterialInfo material;
             if ( !material.find("OBSIDIAN") ) {
                 out.print("%s, %d: no water.\n", __FILE__, __LINE__);
@@ -251,20 +250,21 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
             prod->probability = 100;
             prod->count = 1;
             prod->product_dimension = 1;
-            
+
+            vector<df::reaction_product*> out_products;
             vector<df::item*> out_items;
             vector<df::reaction_reagent*> in_reag;
             vector<df::item*> in_items;
-            prod->produce(firstInvader, &out_items, &in_reag, &in_items, 1, df::job_skill::NONE,
-                df::historical_entity::find(firstInvader->civ_id),
-                df::world_site::find(df::global::ui->site_id));
-            
+            prod->produce(firstInvader, &out_products, &out_items, &in_reag, &in_items, 1, df::job_skill::NONE,
+                df::historical_entity::find(firstInvader->civ_id), 0,
+                df::world_site::find(df::global::ui->site_id), 0);
+
             if ( out_items.size() != 1 ) {
-                out.print("%s, %d: wrong size: %d.\n", __FILE__, __LINE__, out_items.size());
+                out.print("%s, %d: wrong size: %zu.\n", __FILE__, __LINE__, out_items.size());
                 return -1;
             }
             out_items[0]->moveToGround(firstInvader->pos.x, firstInvader->pos.y, firstInvader->pos.z);
-            
+
 #if 0
             //check for existing item there
             for ( size_t a = 0; a < firstInvader->inventory.size(); a++ ) {
@@ -276,7 +276,7 @@ int32_t assignJob(color_ostream& out, Edge firstImportantEdge, unordered_map<df:
             }
 #endif
             Items::moveToInventory(cache, out_items[0], firstInvader, df::unit_inventory_item::T_mode::Weapon, firstInvader->body.weapon_bp);
-            
+
             delete prod;
         }
     }

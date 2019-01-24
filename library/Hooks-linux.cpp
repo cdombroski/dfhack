@@ -88,6 +88,10 @@ DFhackCExport int SDL_PollEvent(SDL::Event* event)
 struct WINDOW;
 DFhackCExport int wgetch(WINDOW *win)
 {
+    if (getenv("DFHACK_HEADLESS"))
+    {
+        return 0;
+    }
     static int (*_wgetch)(WINDOW * win) = (int (*)( WINDOW * )) dlsym(RTLD_NEXT, "wgetch");
     if(!_wgetch)
     {
@@ -114,7 +118,8 @@ static int (*_SDL_Init)(uint32_t flags) = 0;
 DFhackCExport int SDL_Init(uint32_t flags)
 {
     // reroute stderr
-    freopen("stderr.log", "w", stderr);
+    if (!freopen("stderr.log", "w", stderr))
+        fprintf(stderr, "dfhack: failed to reroute stderr\n");
     // we don't reroute stdout until  we figure out if this should be done at all
     // See: Console-linux.cpp
 

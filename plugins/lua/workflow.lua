@@ -29,7 +29,7 @@ end
 local function get_reaction(name)
     if not reaction_id_cache then
         reaction_id_cache = {}
-        for i,v in ipairs(df.global.world.raws.reactions) do
+        for i,v in ipairs(df.global.world.raws.reactions.reactions) do
             reaction_id_cache[v.code] = i
         end
     end
@@ -185,7 +185,14 @@ end
 
 function job_outputs.MakeCrafts(callback, job)
     local mat_type, mat_index, mat_mask = guess_job_material(job)
-    callback{ is_craft = true, mat_type = mat_type, mat_index = mat_index, mat_mask = mat_mask }
+    callback{
+        is_craft = true,
+        item_type = -1,
+        item_subtype = -1,
+        mat_type = mat_type,
+        mat_index = mat_index,
+        mat_mask = mat_mask
+    }
 end
 
 local plant_products = {
@@ -203,12 +210,20 @@ for job,flag in pairs(plant_products) do
     local itag = 'idx_'..string.lower(flag)
     job_outputs[job] = function(callback, job)
         local mat_type, mat_index = -1, -1
+        local seed_type, seed_index = -1, -1
         local mat = dfhack.matinfo.decode(job.job_items[0])
         if mat and mat.plant and mat.plant.flags[flag] then
             mat_type = mat.plant.material_defs[ttag]
             mat_index = mat.plant.material_defs[itag]
+            seed_type = mat.plant.material_defs['type_seed']
+            seed_index = mat.plant.material_defs['idx_seed']
         end
-        default_output(callback, job, mat_type, mat_index)
+        local mat_mask = { }
+        if flag ~= 'LEAVES' then
+            mat_mask.plant = true
+        end
+        default_output(callback, job, mat_type, mat_index, mat_mask)
+        callback{ item_type = df.item_type.SEEDS, mat_type = seed_type, mat_index = seed_index }
     end
 end
 

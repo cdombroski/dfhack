@@ -8,6 +8,7 @@
 #include "modules/Screen.h"
 #include "modules/Gui.h"
 #include <algorithm>
+#include <map>
 #include <set>
 
 #include <VTableInterpose.h>
@@ -19,6 +20,9 @@
 using namespace DFHack;
 using df::global::enabler;
 using df::global::gps;
+
+DFHACK_PLUGIN("embark-tools");
+DFHACK_PLUGIN_IS_ENABLED(is_enabled);
 
 #define FOR_ITER_TOOLS(iter) for(auto iter = tools.begin(); iter != tools.end(); iter++)
 
@@ -61,37 +65,6 @@ void set_embark_pos (df::viewscreen_choose_start_sitest * screen,
     int a, b, c, d, e, f; \
     get_embark_pos(screen, a, b, c, d, e, f);
 
-void resize_embark (df::viewscreen_choose_start_sitest * screen, int dx, int dy)
-{
-    /* Reproduces DF's embark resizing functionality
-     * Local area resizes up and to the right, unless it's already touching the edge
-     */
-    GET_EMBARK_POS(screen, x1, x2, y1, y2, width, height);
-    if (x1 == x2 && dx == -1)
-        dx = 0;
-    if (y1 == y2 && dy == -1)
-        dy = 0;
-
-    x2 += dx;  // Resize right
-    while (x2 > 15)
-    {
-        x2--;
-        x1--;
-    }
-    x1 = std::max(0, x1);
-
-    y1 -= dy;  // Resize up
-    while (y1 < 0)
-    {
-        y1++;
-        y2++;
-    }
-    y2 = std::min(15, y2);
-
-    set_embark_pos(screen, x1, x2, y1, y2);
-    update_embark_sidebar(screen);
-}
-
 typedef df::viewscreen_choose_start_sitest start_sitest;
 typedef std::set<df::interface_key> ikey_set;
 
@@ -116,7 +89,7 @@ public:
     virtual void after_feed(start_sitest* screen, ikey_set* input) { };
     virtual void after_mouse_event(start_sitest* screen) { };
 };
-std::vector<EmbarkTool*> tools;
+std::map<std::string, EmbarkTool*> tools;
 
 /*
 
@@ -155,48 +128,7 @@ public:
         if (input->count(df::interface_key::SETUP_EMBARK))
         {
             cancel = true;
-            screen->in_embark_normal = 1;
-        }
-    };
-};
-
-class NanoEmbark : public EmbarkTool
-{
-public:
-    virtual std::string getId() { return "nano"; }
-    virtual std::string getName() { return "Nano embark"; }
-    virtual std::string getDesc() { return "Allows the embark size to be decreased below 2x2"; }
-    virtual df::interface_key getToggleKey() { return df::interface_key::CUSTOM_N; }
-    virtual void before_feed(start_sitest* screen, ikey_set* input, bool &cancel)
-    {
-        for (auto iter = input->begin(); iter != input->end(); iter++)
-        {
-            df::interface_key key = *iter;
-            bool is_resize = true;
-            int dx = 0, dy = 0;
-            switch (key)
-            {
-                case df::interface_key::SETUP_LOCAL_Y_UP:
-                    dy = 1;
-                    break;
-                case df::interface_key::SETUP_LOCAL_Y_DOWN:
-                    dy = -1;
-                    break;
-                case df::interface_key::SETUP_LOCAL_X_UP:
-                    dx = 1;
-                    break;
-                case df::interface_key::SETUP_LOCAL_X_DOWN:
-                    dx = -1;
-                    break;
-                default:
-                    is_resize = false;
-            }
-            if (is_resize)
-            {
-                cancel = true;
-                resize_embark(screen, dx, dy);
-                return;
-            }
+            screen->in_embark_only_warning = 1;
         }
     };
 };
@@ -246,7 +178,14 @@ public:
         auto dim = Screen::getWindowSize();
         int x = dim.x - 28,
             y = 13;
-        if (screen->page == 0)
+        if (screen->page == start_sitest::T_page::Biome && (
+                int(screen->in_embark_aquifer) +
+                int(screen->in_embark_salt) +
+                int(screen->in_embark_large) +
+                int(screen->in_embark_narrow) +
+                int(screen->in_embark_only_warning) +
+                int(screen->in_embark_civ_dying)
+            ) < 2)
         {
             OutputString(COLOR_YELLOW, x, y, indicator);
         }
@@ -329,6 +268,8 @@ public:
                 case df::interface_key::CURSOR_DOWNRIGHT_FAST:
                     is_motion = true;
                     break;
+                default:
+                    break;
             }
             if (is_motion && !moved_position)
             {
@@ -345,7 +286,7 @@ protected:
     // Used for event handling
     int prev_x;
     int prev_y;
-    bool prev_lbut;
+    int8_t prev_lbut;
     // Used for controls
     bool base_max_x;
     bool base_max_y;
@@ -365,7 +306,7 @@ protected:
         return in_local_move || in_local_edge_resize_x || in_local_edge_resize_y ||
             in_local_corner_resize;
     }
-    void lbut_press(start_sitest* screen, bool pressed, int x, int y)
+    void lbut_press(start_sitest* screen, int8_t pressed, int x, int y)
     {
         GET_EMBARK_POS(screen, x1, x2, y1, y2, width, height);
         in_local_move = in_local_edge_resize_x = in_local_edge_resize_y =
@@ -521,7 +462,7 @@ public:
         :EmbarkTool(),
         prev_x(0),
         prev_y(0),
-        prev_lbut(false),
+        prev_lbut(0),
         base_max_x(false),
         base_max_y(false),
         in_local_move(false),
@@ -647,6 +588,8 @@ public:
             max_y = min_y + height;
         Screen::fillRect(Screen::Pen(' ', COLOR_BLACK, COLOR_DARKGREY), min_x, min_y, max_x, max_y);
         Screen::fillRect(Screen::Pen(' ', COLOR_BLACK, COLOR_BLACK), min_x + 1, min_y + 1, max_x - 1, max_y - 1);
+        std::string title = "  Embark tools (DFHack)  ";
+        Screen::paintString(Screen::Pen(' ', COLOR_BLACK, COLOR_GREY), min_x + ((max_x - min_x - title.size()) / 2), min_y, title);
         x = min_x + 2;
         y = max_y - 2;
         OutputString(COLOR_LIGHTRED, x, y, Screen::getKeyDisplay(df::interface_key::SELECT));
@@ -656,7 +599,7 @@ public:
         y = min_y + 2;
         FOR_ITER_TOOLS(iter)
         {
-            EmbarkTool* t = *iter;
+            EmbarkTool* t = iter->second;
             x = min_x + 2;
             OutputString(COLOR_LIGHTRED, x, y, Screen::getKeyDisplay(t->getToggleKey()));
             OutputString(COLOR_WHITE, x, y, ": " + t->getName() + ": ");
@@ -677,7 +620,7 @@ public:
             df::interface_key key = *iter;
             FOR_ITER_TOOLS(iter)
             {
-                EmbarkTool* t = *iter;
+                EmbarkTool* t = iter->second;
                 if (t->getToggleKey() == key)
                 {
                     t->toggleEnabled();
@@ -687,25 +630,20 @@ public:
     };
 };
 
+void add_tool (EmbarkTool *t)
+{
+    tools[t->getId()] = t;
+}
+
 bool tool_exists (std::string tool_name)
 {
-    FOR_ITER_TOOLS(iter)
-    {
-        EmbarkTool* tool = *iter;
-        if (tool->getId() == tool_name)
-            return true;
-    }
-    return false;
+    return tools.find(tool_name) != tools.end();
 }
 
 bool tool_enabled (std::string tool_name)
 {
-    FOR_ITER_TOOLS(iter)
-    {
-        EmbarkTool* tool = *iter;
-        if (tool->getId() == tool_name)
-            return tool->getEnabled();
-    }
+    if (tool_exists(tool_name))
+        return tools[tool_name]->getEnabled();
     return false;
 }
 
@@ -714,7 +652,7 @@ bool tool_enable (std::string tool_name, bool enable_state)
     int n = 0;
     FOR_ITER_TOOLS(iter)
     {
-        EmbarkTool* tool = *iter;
+        EmbarkTool* tool = iter->second;
         if (tool->getId() == tool_name || tool_name == "all")
         {
             tool->setEnabled(enable_state);
@@ -738,13 +676,14 @@ struct choose_start_site_hook : df::viewscreen_choose_start_sitest
         std::vector<std::string> parts;
         FOR_ITER_TOOLS(it)
         {
-            if ((*it)->getEnabled())
-                parts.push_back((*it)->getName());
+            EmbarkTool *t = it->second;
+            if (t->getEnabled())
+                parts.push_back(t->getName());
         }
         if (parts.size())
         {
             std::string label = join_strings(", ", parts);
-            if (label.size() > dim.x - x - 1)
+            if (int16_t(label.size()) > dim.x - x - 1)
             {
                 label.resize(dim.x - x - 1 - 3);
                 label.append("...");
@@ -757,7 +696,7 @@ struct choose_start_site_hook : df::viewscreen_choose_start_sitest
 
     void display_settings()
     {
-        Screen::show(new embark_tools_settings);
+        Screen::show(dts::make_unique<embark_tools_settings>(), plugin_self);
     }
 
     inline bool is_valid_page()
@@ -770,7 +709,7 @@ struct choose_start_site_hook : df::viewscreen_choose_start_sitest
         bool cancel = false;
         FOR_ITER_TOOLS(iter)
         {
-            EmbarkTool* tool = *iter;
+            EmbarkTool* tool = iter->second;
             if (tool->getEnabled())
                 tool->before_feed(this, input, cancel);
         }
@@ -781,7 +720,7 @@ struct choose_start_site_hook : df::viewscreen_choose_start_sitest
             display_settings();
         FOR_ITER_TOOLS(iter)
         {
-            EmbarkTool* tool = *iter;
+            EmbarkTool* tool = iter->second;
             if (tool->getEnabled())
                 tool->after_feed(this, input);
         }
@@ -790,7 +729,7 @@ struct choose_start_site_hook : df::viewscreen_choose_start_sitest
     {
         FOR_ITER_TOOLS(iter)
         {
-            EmbarkTool* tool = *iter;
+            EmbarkTool* tool = iter->second;
             if (tool->getEnabled())
                 tool->before_render(this);
         }
@@ -798,7 +737,7 @@ struct choose_start_site_hook : df::viewscreen_choose_start_sitest
         display_tool_status();
         FOR_ITER_TOOLS(iter)
         {
-            EmbarkTool* tool = *iter;
+            EmbarkTool* tool = iter->second;
             if (tool->getEnabled())
                 tool->after_render(this);
         }
@@ -807,24 +746,20 @@ struct choose_start_site_hook : df::viewscreen_choose_start_sitest
 IMPLEMENT_VMETHOD_INTERPOSE(choose_start_site_hook, feed);
 IMPLEMENT_VMETHOD_INTERPOSE(choose_start_site_hook, render);
 
-DFHACK_PLUGIN("embark-tools");
-DFHACK_PLUGIN_IS_ENABLED(is_enabled);
-
 command_result embark_tools_cmd (color_ostream &out, std::vector <std::string> & parameters);
 
 DFhackCExport command_result plugin_init (color_ostream &out, std::vector <PluginCommand> &commands)
 {
-    tools.push_back(new EmbarkAnywhere);
-    tools.push_back(new MouseControl);
-    tools.push_back(new NanoEmbark);
-    tools.push_back(new SandIndicator);
-    tools.push_back(new StablePosition);
+    add_tool(new EmbarkAnywhere);
+    add_tool(new MouseControl);
+    add_tool(new SandIndicator);
+    add_tool(new StablePosition);
     std::string help = "";
     help += "embark-tools (enable/disable) tool [tool...]\n"
             "Tools:\n";
     FOR_ITER_TOOLS(iter)
     {
-        help += ("  " + (*iter)->getId() + ": " + (*iter)->getDesc() + "\n");
+        help += ("  " + iter->second->getId() + ": " + iter->second->getDesc() + "\n");
     }
     commands.push_back(PluginCommand(
         "embark-tools",
@@ -855,6 +790,11 @@ DFhackCExport command_result plugin_enable (color_ostream &out, bool enable)
     return CR_OK;
 }
 
+DFhackCExport command_result plugin_onstatechange (color_ostream &out, state_change_event evt)
+{
+    return CR_OK;
+}
+
 DFhackCExport command_result plugin_onupdate (color_ostream &out)
 {
     static int8_t mask = 0;
@@ -874,8 +814,8 @@ DFhackCExport command_result plugin_onupdate (color_ostream &out)
     {
         FOR_ITER_TOOLS(iter)
         {
-            if ((*iter)->getEnabled())
-                (*iter)->after_mouse_event(screen);
+            if (iter->second->getEnabled())
+                iter->second->after_mouse_event(screen);
         }
     }
     mask = new_mask;
@@ -915,8 +855,8 @@ command_result embark_tools_cmd (color_ostream &out, std::vector <std::string> &
             out << "Tool status:" << std::endl;
             FOR_ITER_TOOLS(iter)
             {
-                EmbarkTool* t = *iter;
-                out << t->getName() << " (" << t->getId() << "): "
+                EmbarkTool* t = iter->second;
+                out << "  " << t->getName() << " (" << t->getId() << "): "
                     << (t->getEnabled() ? "Enabled" : "Disabled") << std::endl;
             }
         }

@@ -57,8 +57,6 @@ using df::global::ui;
 using df::global::world;
 using df::global::gamemode;
 using df::global::ui_build_selector;
-using df::global::ui_menu_width;
-using df::global::ui_area_map_width;
 
 using namespace DFHack::Gui;
 using Screen::Pen;
@@ -509,11 +507,11 @@ static bool try_store_item(df::building *target, df::item *item)
             job->flags.bits.specific_dropoff = true;
             break;
         case building_type::Cabinet:
-            job->job_type = job_type::StoreItemInCabinet;
+            job->job_type = job_type::StoreOwnedItem;
             dest = true;
             break;
         default:
-            job->job_type = job_type::StoreItemInChest;
+            job->job_type = job_type::StoreItemInHospital;
             dest = true;
             break;
     }

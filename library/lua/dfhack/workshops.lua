@@ -41,7 +41,7 @@ jobs_furnace={
     },
     --[[ [df.furnace_type.MetalsmithsForge]={
         unpack(concat(furnaces,mechanism,anvil,crafts,coins,flask))
-        
+
     },
     ]]
     --MetalsmithsForge,
@@ -86,7 +86,7 @@ jobs_furnace={
     },
 }
 jobs_workshop={
-    
+
     [df.workshop_type.Jewelers]={
         {
             name="cut gems",
@@ -126,19 +126,6 @@ jobs_workshop={
             job_fields={job_type=df.job_type.CatchLiveFish}
         }, -- no items?
     },
-    [df.workshop_type.Still]={
-        {
-            name="brew drink",
-            items={{flags1={distillable=true},vector_id=22},{flags1={empty=true},flags3={food_storage=true}}},
-            job_fields={job_type=df.job_type.BrewDrink}
-        },
-        {
-            name="extract from plants",
-            items={{item_type=df.item_type.PLANT,flags1={unrotten=true,extract_bearing_plant=true}},{item_type=df.item_type.FLASK,flags1={empty=true}}},
-            job_fields={job_type=df.job_type.ExtractFromPlants}
-        },
-        --mead from raws?
-    },
     [df.workshop_type.Masons]={
         defaults={item_type=df.item_type.BOULDER,item_subtype=-1,vector_id=df.job_item_vector_id.BOULDER, mat_type=0,mat_index=-1,flags3={hard=true}},--flags2={non_economic=true},
         {
@@ -146,7 +133,7 @@ jobs_workshop={
             items={{}},
             job_fields={job_type=df.job_type.ConstructArmorStand}
             },
-            
+
         {
             name="construct blocks",
             items={{}},
@@ -226,13 +213,13 @@ jobs_workshop={
     [df.workshop_type.Carpenters]={
         --training weapons, wooden shields
         defaults={item_type=df.item_type.WOOD,vector_id=df.job_item_vector_id.WOOD},
-        
+
         {
             name="make barrel",
             items={{}},
             job_fields={job_type=df.job_type.MakeBarrel}
         },
-        
+
         {
             name="make bucket",
             items={{}},
@@ -336,20 +323,20 @@ jobs_workshop={
     },
     [df.workshop_type.Kitchen]={
         --mat_type=2,3,4
-        defaults={flags1={unrotten=true,cookable=true}},
+        defaults={flags1={unrotten=true}},
         {
             name="prepare easy meal",
-            items={{flags1={solid=true}},{}},
+            items={{flags1={solid=true,cookable=true}},{flags1={cookable=true}}},
             job_fields={job_type=df.job_type.PrepareMeal,mat_type=2}
         },
         {
             name="prepare fine meal",
-            items={{flags1={solid=true}},{},{}},
+            items={{flags1={solid=true,cookable=true}},{flags1={cookable=true}},{flags1={cookable=true}}},
             job_fields={job_type=df.job_type.PrepareMeal,mat_type=3}
         },
         {
             name="prepare lavish meal",
-            items={{flags1={solid=true}},{},{},{}},
+            items={{flags1={solid=true,cookable=true}},{flags1={cookable=true}},{flags1={cookable=true}},{flags1={cookable=true}}},
             job_fields={job_type=df.job_type.PrepareMeal,mat_type=4}
         },
     },
@@ -489,7 +476,7 @@ local function matchIds(bid1,wid1,cid1,bid2,wid2,cid2)
 end
 local function scanRawsReaction(buildingId,workshopId,customId)
     local ret={}
-    for idx,reaction in ipairs(df.global.world.raws.reactions) do
+    for idx,reaction in ipairs(df.global.world.raws.reactions.reactions) do
         for k,v in pairs(reaction.building.type) do
             if matchIds(buildingId,workshopId,customId,v,reaction.building.subtype[k],reaction.building.custom[k]) then
                 table.insert(ret,reaction)
@@ -550,7 +537,7 @@ function getJobs(buildingId,workshopId,customId)
         c_jobs=jobs_workshop[workshopId]
     elseif buildingId==df.building_type.Furnace then
         c_jobs=jobs_furnace[workshopId]
-        
+
         if workshopId == df.furnace_type.Smelter or workshopId == df.furnace_type.MagmaSmelter then
             c_jobs=utils.clone(c_jobs,true)
             addSmeltJobs(c_jobs,workshopId == df.furnace_type.Smelter)
@@ -563,7 +550,7 @@ function getJobs(buildingId,workshopId,customId)
     else
         c_jobs=utils.clone(c_jobs,true)
     end
-    
+
     addReactionJobs(c_jobs,buildingId,workshopId,customId)
     for jobId,contents in pairs(c_jobs) do
         if jobId~="defaults" then

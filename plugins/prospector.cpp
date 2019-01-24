@@ -18,6 +18,7 @@ using namespace std;
 #include "Console.h"
 #include "Export.h"
 #include "PluginManager.h"
+#include "modules/Gui.h"
 #include "modules/MapCache.h"
 
 #include "MiscUtils.h"
@@ -151,9 +152,9 @@ void printMats(color_ostream &con, MatMap &mat, std::vector<T*> &materials, bool
     for (MatSorter::const_iterator it = sorting_vector.begin();
          it != sorting_vector.end(); ++it)
     {
-        if(it->first >= materials.size())
+        if(size_t(it->first) >= materials.size())
         {
-            con << "Bad index: " << it->first << " out of " 
+            con << "Bad index: " << it->first << " out of "
                 <<  materials.size() << endl;
             continue;
         }
@@ -176,16 +177,21 @@ void printVeins(color_ostream &con, MatMap &mat_map,
     MatMap gems;
     MatMap rest;
 
-    for (MatMap::const_iterator it = mat_map.begin(); it != mat_map.end(); ++it)
+    for (const auto &kv : mat_map)
     {
-        df::inorganic_raw *gloss = world->raws.inorganics[it->first];
+        df::inorganic_raw *gloss = vector_get(world->raws.inorganics, kv.first);
+        if (!gloss)
+        {
+            con.printerr("invalid material gloss: %hi\n", kv.first);
+            continue;
+        }
 
         if (gloss->material.isGem())
-            gems[it->first] = it->second;
+            gems[kv.first] = kv.second;
         else if (gloss->isOre())
-            ores[it->first] = it->second;
+            ores[kv.first] = kv.second;
         else
-            rest[it->first] = it->second;
+            rest[kv.first] = kv.second;
     }
 
     con << "Ores:" << std::endl;
@@ -249,6 +255,10 @@ static df::world_region_details *get_details(df::world_data *data, df::coord2d p
 
 bool estimate_underground(color_ostream &out, EmbarkTileLayout &tile, df::world_region_details *details, int x, int y)
 {
+    if (x < 0 || y < 0 || x > 15 || y > 15) {
+        out.printerr("Invalid embark coordinates: x=%i, y=%i\n", x, y);
+        return false;
+    }
     // Find actual biome
     int bv = clip_range(details->biome[x][y] & 15, 1, 9);
     tile.biome_off = biome_delta[bv-1];
@@ -513,9 +523,9 @@ static command_result embark_prospector(color_ostream &out, df::viewscreen_choos
         biomes[screen->biome_rgn[screen->biome_idx]]++;
     }*/
 
-    for (int x = screen->location.embark_pos_min.x; x <= screen->location.embark_pos_max.x; x++)
+    for (int x = screen->location.embark_pos_min.x; x <= 15 && x <= screen->location.embark_pos_max.x; x++)
     {
-        for (int y = screen->location.embark_pos_min.y; y <= screen->location.embark_pos_max.y; y++)
+        for (int y = screen->location.embark_pos_min.y; y <= 15 && y <= screen->location.embark_pos_max.y; y++)
         {
             EmbarkTileLayout tile;
             if (!estimate_underground(out, tile, cur_details, x, y) ||
@@ -575,7 +585,8 @@ command_result prospector (color_ostream &con, vector <string> & parameters)
     CoreSuspender suspend;
 
     // Embark screen active: estimate using world geology data
-    if (VIRTUAL_CAST_VAR(screen, df::viewscreen_choose_start_sitest, Core::getTopViewscreen()))
+    auto screen = Gui::getViewscreenByType<df::viewscreen_choose_start_sitest>(0);
+    if (screen)
         return embark_prospector(con, screen, showHidden, showValue);
 
     if (!Maps::IsValid())
@@ -719,7 +730,7 @@ command_result prospector (color_ostream &con, vector <string> & parameters)
                             }
 
                             if (showSlade && blockFeatureGlobal.type != -1 && des.bits.feature_global
-                                    && blockFeatureGlobal.type == feature_type::feature_underworld_from_layer
+                                    && blockFeatureGlobal.type == feature_type::underworld_from_layer
                                     && blockFeatureGlobal.main_material == 0) // stone
                             {
                                 layerMats[blockFeatureGlobal.sub_material].add(global_z);
@@ -745,7 +756,7 @@ command_result prospector (color_ostream &con, vector <string> & parameters)
                         for (PlantList::const_iterator it = plants->begin(); it != plants->end(); it++)
                         {
                             const df::plant & plant = *(*it);
-                            if (plant.pos.z != z)
+                            if (uint32_t(plant.pos.z) != z)
                                 continue;
                             df::coord2d loc(plant.pos.x, plant.pos.y);
                             loc = loc % 16;

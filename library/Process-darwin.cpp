@@ -41,13 +41,14 @@ using namespace std;
 
 #include <md5wrapper.h>
 #include "MemAccess.h"
+#include "Memory.h"
 #include "VersionInfoFactory.h"
 #include "VersionInfo.h"
 #include "Error.h"
 #include <string.h>
 using namespace DFHack;
 
-Process::Process(VersionInfoFactory * known_versions)
+Process::Process(const VersionInfoFactory& known_versions) : identified(false), my_pe(0)
 {
     int target_result;
 
@@ -58,20 +59,17 @@ Process::Process(VersionInfoFactory * known_versions)
         real_path = realpath(path, NULL);
     }
 
-    identified = false;
-    my_descriptor = 0;
-
     md5wrapper md5;
     uint32_t length;
     uint8_t first_kb [1024];
     memset(first_kb, 0, sizeof(first_kb));
     // get hash of the running DF process
-    string hash = md5.getHashFromFile(real_path, length, (char *) first_kb);
+    my_md5 = md5.getHashFromFile(real_path, length, (char *) first_kb);
     // create linux process, add it to the vector
-    VersionInfo * vinfo = known_versions->getVersionInfoByMD5(hash);
+    auto vinfo = known_versions.getVersionInfoByMD5(my_md5);
     if(vinfo)
     {
-        my_descriptor = new VersionInfo(*vinfo);
+        my_descriptor = std::make_shared<VersionInfo>(*vinfo);
         identified = true;
     }
     else
@@ -79,7 +77,7 @@ Process::Process(VersionInfoFactory * known_versions)
         char * wd = getcwd(NULL, 0);
         cerr << "Unable to retrieve version information.\n";
         cerr << "File: " << real_path << endl;
-        cerr << "MD5: " << hash << endl;
+        cerr << "MD5: " << my_md5 << endl;
         cerr << "working dir: " << wd << endl;
         cerr << "length:" << length << endl;
         cerr << "1KB hexdump follows:" << endl;
@@ -110,15 +108,14 @@ Process::Process(VersionInfoFactory * known_versions)
 
 Process::~Process()
 {
-    // destroy our copy of the memory descriptor
-    delete my_descriptor;
+    // Nothing to do here
 }
 
 string Process::doReadClassName (void * vptr)
 {
     //FIXME: BAD!!!!!
-    char * typeinfo = Process::readPtr(((char *)vptr - 0x4));
-    char * typestring = Process::readPtr(typeinfo + 0x4);
+    char * typeinfo = Process::readPtr(((char *)vptr - sizeof(void*)));
+    char * typestring = Process::readPtr(typeinfo + sizeof(void*));
     string raw = readCString(typestring);
     size_t  start = raw.find_first_of("abcdefghijklmnopqrstuvwxyz");// trim numbers
     size_t end = raw.length();
@@ -143,15 +140,22 @@ behavior_strings[] = {
 
 void Process::getMemRanges( vector<t_memrange> & ranges )
 {
+    static bool log_ranges = (getenv("DFHACK_LOG_MEM_RANGES") != NULL);
 
     kern_return_t kr;
     task_t the_task;
 
     the_task = mach_task_self();
 
+#ifdef DFHACK64
+    mach_vm_size_t vmsize;
+    mach_vm_address_t address;
+    vm_region_basic_info_data_64_t info;
+#else
     vm_size_t vmsize;
     vm_address_t address;
     vm_region_basic_info_data_t info;
+#endif
     mach_msg_type_number_t info_count;
     vm_region_flavor_t flavor;
     memory_object_name_t object;
@@ -160,10 +164,18 @@ void Process::getMemRanges( vector<t_memrange> & ranges )
     address = 0;
 
     do {
+#ifdef DFHACK64
+        flavor = VM_REGION_BASIC_INFO_64;
+        info_count = VM_REGION_BASIC_INFO_COUNT_64;
+        kr = mach_vm_region(the_task, &address, &vmsize, flavor,
+                       (vm_region_info_64_t)&info, &info_count, &object);
+#else
         flavor = VM_REGION_BASIC_INFO;
         info_count = VM_REGION_BASIC_INFO_COUNT;
         kr = vm_region(the_task, &address, &vmsize, flavor,
                        (vm_region_info_t)&info, &info_count, &object);
+#endif
+
         if (kr == KERN_SUCCESS) {
             if (info.reserved==1) {
                 address += vmsize;
@@ -188,9 +200,13 @@ void Process::getMemRanges( vector<t_memrange> & ranges )
             temp.valid = true;
             ranges.push_back(temp);
 
-            /*fprintf(stderr,
-            "%08x-%08x %8uK %c%c%c/%c%c%c %11s %6s %10s uwir=%hu sub=%u dlname: %s\n",
-                            address, (address + vmsize), (vmsize >> 10),
+            if (log_ranges)
+            {
+                fprintf(stderr,
+                "%p-%p %8zuK %c%c%c/%c%c%c %11s %6s %10s uwir=%hu sub=%u dlname: %s\n",
+                            (void*)address,
+                            (void*)(address + vmsize),
+                            size_t(vmsize >> 10),
                             (info.protection & VM_PROT_READ)        ? 'r' : '-',
                             (info.protection & VM_PROT_WRITE)       ? 'w' : '-',
                             (info.protection & VM_PROT_EXECUTE)     ? 'x' : '-',
@@ -202,7 +218,8 @@ void Process::getMemRanges( vector<t_memrange> & ranges )
                             behavior_strings[info.behavior],
                             info.user_wired_count,
                             info.reserved,
-                            dlinfo.dli_fname);*/
+                            dlinfo.dli_fname);
+            }
 
             address += vmsize;
         } else if (kr != KERN_INVALID_ADDRESS) {
@@ -222,28 +239,12 @@ void Process::getMemRanges( vector<t_memrange> & ranges )
 
 uintptr_t Process::getBase()
 {
-    return 0x1000;
+    return DEFAULT_BASE_ADDR;  // Memory.h
 }
 
 int Process::adjustOffset(int offset, bool /*to_file*/)
 {
     return offset;
-}
-
-static int getdir (string dir, vector<string> &files)
-{
-    DIR *dp;
-    struct dirent *dirp;
-    if((dp  = opendir(dir.c_str())) == NULL)
-    {
-        cout << "Error(" << errno << ") opening " << dir << endl;
-        return errno;
-    }
-    while ((dirp = readdir(dp)) != NULL) {
-    files.push_back(string(dirp->d_name));
-    }
-    closedir(dp);
-    return 0;
 }
 
 uint32_t Process::getTickCount()
@@ -255,16 +256,29 @@ uint32_t Process::getTickCount()
 
 string Process::getPath()
 {
+    static string cached_path = "";
+    if (cached_path.size())
+        return cached_path;
     char path[1024];
     char *real_path;
     uint32_t size = sizeof(path);
+    if (getcwd(path, size))
+    {
+        cached_path = string(path);
+        return cached_path;
+    }
     if (_NSGetExecutablePath(path, &size) == 0) {
         real_path = realpath(path, NULL);
     }
+    else {
+        fprintf(stderr, "_NSGetExecutablePath failed!\n");
+        cached_path = ".";
+        return cached_path;
+    }
     std::string path_string(real_path);
     int last_slash = path_string.find_last_of("/");
-    std::string directory = path_string.substr(0,last_slash);
-    return directory;
+    cached_path = path_string.substr(0,last_slash);
+    return cached_path;
 }
 
 int Process::getPID()

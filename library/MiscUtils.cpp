@@ -25,9 +25,11 @@ distribution.
 #include "Internal.h"
 #include "Export.h"
 #include "MiscUtils.h"
-#include "Error.h"
+#include "ColorText.h"
 
 #ifndef LINUX_BUILD
+// We don't want min and max macros
+#define NOMINMAX
     #include <Windows.h>
 #else
     #include <sys/time.h>
@@ -37,17 +39,11 @@ distribution.
 #include <ctype.h>
 #include <stdarg.h>
 #include <string.h>
+#include <cstdlib>
 
 #include <sstream>
 #include <map>
-
-const char *DFHack::Error::NullPointer::what() const throw() {
-    return "DFHack::Error::NullPointer";
-}
-
-const char *DFHack::Error::InvalidArgument::what() const throw() {
-    return "DFHack::Error::InvalidArgument";
-}
+#include <array>
 
 std::string stl_sprintf(const char *fmt, ...) {
     va_list lst;
@@ -58,18 +54,25 @@ std::string stl_sprintf(const char *fmt, ...) {
 }
 
 std::string stl_vsprintf(const char *fmt, va_list args) {
-    std::vector<char> buf;
-    buf.resize(4096);
-    for (;;) {
-        int rsz = vsnprintf(&buf[0], buf.size(), fmt, args);
-
-        if (rsz < 0)
-            buf.resize(buf.size()*2);
-        else if (unsigned(rsz) > buf.size())
-            buf.resize(rsz+1);
-        else
-            return std::string(&buf[0], rsz);
-    }
+    /* Allow small (about single line) strings to be printed into stack memory
+     * with a call to vsnprintf.
+     */
+    std::array<char,128> buf;
+    va_list args2;
+    va_copy(args2, args);
+    int rsz = vsnprintf(&buf[0], buf.size(), fmt, args2);
+    va_end(args2);
+    if (rsz < 0)
+        return std::string(); /* Error occurred */
+    if (static_cast<unsigned>(rsz) < buf.size())
+        return std::string(&buf[0], rsz); /* Whole string fits to a single line buffer */
+    std::string rv;
+    // Allocate enough memory for the output and null termination
+    rv.resize(rsz);
+    rsz = vsnprintf(&rv[0], rv.size()+1, fmt, args);
+    if (rsz < static_cast<int>(rv.size()))
+      rv.resize(std::max(rsz,0));
+    return rv;
 }
 
 bool split_string(std::vector<std::string> *out,
@@ -123,6 +126,35 @@ std::string toLower(const std::string &str)
     for (unsigned i = 0; i < str.size(); ++i)
         rv[i] = tolower(str[i]);
     return rv;
+}
+
+bool word_wrap(std::vector<std::string> *out, const std::string &str, size_t line_length)
+{
+    out->clear();
+    std::istringstream input(str);
+    std::string out_line;
+    std::string word;
+    if (input >> word)
+    {
+        out_line += word;
+        // size_t remaining = line_length - std::min(line_length, word.length());
+        while (input >> word)
+        {
+            if (out_line.length() + word.length() + 1 <= line_length)
+            {
+                out_line += ' ';
+                out_line += word;
+            }
+            else
+            {
+                out->push_back(out_line);
+                out_line = word;
+            }
+        }
+        if (out_line.length())
+            out->push_back(out_line);
+    }
+    return true;
 }
 
 bool prefix_matches(const std::string &prefix, const std::string &key, std::string *tail)
@@ -346,4 +378,25 @@ std::string UTF2DF(const std::string &in)
     if (pos != size)
         out.resize(pos);
     return out;
+}
+
+DFHACK_EXPORT std::string DF2CONSOLE(const std::string &in)
+{
+    bool is_utf = false;
+#ifdef LINUX_BUILD
+    std::string locale = "";
+    if (getenv("LANG"))
+        locale += getenv("LANG");
+    if (getenv("LC_CTYPE"))
+        locale += getenv("LC_CTYPE");
+    locale = toUpper(locale);
+    is_utf = (locale.find("UTF-8") != std::string::npos) ||
+             (locale.find("UTF8") != std::string::npos);
+#endif
+    return is_utf ? DF2UTF(in) : in;
+}
+
+DFHACK_EXPORT std::string DF2CONSOLE(DFHack::color_ostream &out, const std::string &in)
+{
+    return out.is_console() ? DF2CONSOLE(in) : in;
 }

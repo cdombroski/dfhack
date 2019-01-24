@@ -30,9 +30,15 @@ distribution.
 #include <vector>
 #include <stack>
 #include <map>
+#include <memory>
 #include <stdint.h>
 #include "Console.h"
 #include "modules/Graphic.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include "RemoteClient.h"
 
@@ -41,13 +47,6 @@ distribution.
 #define DFH_MOD_ALT 4
 
 struct WINDOW;
-
-namespace tthread
-{
-    class mutex;
-    class condition_variable;
-    class thread;
-}
 
 namespace df
 {
@@ -65,13 +64,24 @@ namespace DFHack
     class PluginManager;
     class Core;
     class ServerMain;
+    class CoreSuspender;
+
+    namespace Lua { namespace Core {
+        DFHACK_EXPORT void Reset(color_ostream &out, const char *where);
+    } }
     namespace Windows
     {
         class df_window;
     }
 
+    namespace Screen
+    {
+        struct Hide;
+    }
+
     enum state_change_event
     {
+        SC_UNKNOWN = -1,
         SC_WORLD_LOADED = 0,
         SC_WORLD_UNLOADED = 1,
         SC_MAP_LOADED = 2,
@@ -81,6 +91,21 @@ namespace DFHack
         SC_BEGIN_UNLOAD = 6,
         SC_PAUSED = 7,
         SC_UNPAUSED = 8
+    };
+
+    class DFHACK_EXPORT StateChangeScript
+    {
+    public:
+        state_change_event event;
+        std::string path;
+        bool save_specific;
+        StateChangeScript(state_change_event event, std::string path, bool save_specific = false)
+            :event(event), path(path), save_specific(save_specific)
+        { }
+        bool operator==(const StateChangeScript& other)
+        {
+            return event == other.event && path == other.path && save_specific == other.save_specific;
+        }
     };
 
     // Core is a singleton. Why? Because it is closely tied to SDL calls. It tracks the global state of DF.
@@ -93,13 +118,14 @@ namespace DFHack
         friend void ::DFH_SDL_Quit(void);
         friend int  ::DFH_SDL_PollEvent(SDL::Event *);
         friend int  ::DFH_SDL_Init(uint32_t flags);
+        friend int  ::DFH_wgetch(WINDOW * w);
 #else
         friend int  ::SDL_NumJoysticks(void);
         friend void ::SDL_Quit(void);
         friend int  ::SDL_PollEvent(SDL::Event *);
         friend int  ::SDL_Init(uint32_t flags);
-#endif
         friend int  ::wgetch(WINDOW * w);
+#endif
         friend int  ::egg_init(void);
         friend int  ::egg_shutdown(void);
         friend int  ::egg_tick(void);
@@ -110,16 +136,11 @@ namespace DFHack
         /// Get the single Core instance or make one.
         static Core& getInstance()
         {
-            // FIXME: add critical section for thread safety here.
             static Core instance;
             return instance;
         }
         /// check if the activity lock is owned by this thread
         bool isSuspended(void);
-        /// try to acquire the activity lock
-        void Suspend(void);
-        /// return activity lock
-        void Resume(void);
         /// Is everything OK?
         bool isValid(void) { return !errorstate; }
 
@@ -132,7 +153,7 @@ namespace DFHack
         /// sets the current hotkey command
         bool setHotkeyCmd( std::string cmd );
         /// removes the hotkey command and gives it to the caller thread
-        std::string getHotkeyCmd( void );
+        std::string getHotkeyCmd( bool &keep_going );
 
         /// adds a named pointer (for later or between plugins)
         void RegisterData(void *p,std::string key);
@@ -143,10 +164,23 @@ namespace DFHack
         command_result runCommand(color_ostream &out, const std::string &command);
         bool loadScriptFile(color_ostream &out, std::string fname, bool silent = false);
 
+        bool addScriptPath(std::string path, bool search_before = false);
+        bool removeScriptPath(std::string path);
+        std::string findScript(std::string name);
+        void getScriptPaths(std::vector<std::string> *dest);
+
         bool ClearKeyBindings(std::string keyspec);
         bool AddKeyBinding(std::string keyspec, std::string cmdline);
         std::vector<std::string> ListKeyBindings(std::string keyspec);
         int8_t getModstate() { return modstate; }
+
+        bool AddAlias(const std::string &name, const std::vector<std::string> &command, bool replace = false);
+        bool RemoveAlias(const std::string &name);
+        bool IsAlias(const std::string &name);
+        bool RunAlias(color_ostream &out, const std::string &name,
+            const std::vector<std::string> &parameters, command_result &result);
+        std::map<std::string, std::vector<std::string>> ListAliases();
+        std::string GetAliasCommand(const std::string &name, const std::string &default_ = "");
 
         std::string getHackPath();
 
@@ -157,12 +191,12 @@ namespace DFHack
 
         DFHack::Console &getConsole() { return con; }
 
-        DFHack::Process * p;
-        DFHack::VersionInfo * vinfo;
+        std::unique_ptr<DFHack::Process> p;
+        std::shared_ptr<DFHack::VersionInfo> vinfo;
         DFHack::Windows::df_window * screen_window;
 
-        static void print(const char *format, ...);
-        static void printerr(const char *format, ...);
+        static void print(const char *format, ...) Wformat(printf,1,2);
+        static void printerr(const char *format, ...) Wformat(printf,1,2);
 
         PluginManager *getPluginManager() { return plug_mgr; }
 
@@ -172,13 +206,10 @@ namespace DFHack
         DFHack::Console con;
 
         Core();
+        ~Core();
 
         struct Private;
-        Private *d;
-
-        friend class CoreSuspendClaimer;
-        int ClaimSuspend(bool force_base);
-        void DisclaimSuspend(int level);
+        std::unique_ptr<Private> d;
 
         bool Init();
         int Update (void);
@@ -190,12 +221,13 @@ namespace DFHack
         void doUpdate(color_ostream &out, bool first_update);
         void onUpdate(color_ostream &out);
         void onStateChange(color_ostream &out, state_change_event event);
+        void handleLoadAndUnloadScripts(color_ostream &out, state_change_event event);
 
         Core(Core const&);              // Don't Implement
         void operator=(Core const&);    // Don't implement
 
         // report error to user while failing
-        void fatal (std::string output, bool will_deactivate);
+        void fatal (std::string output);
 
         // 1 = fatal failure
         bool errorstate;
@@ -203,7 +235,7 @@ namespace DFHack
         struct Cond;
 
         // FIXME: shouldn't be kept around like this
-        DFHack::VersionInfoFactory * vif;
+        std::unique_ptr<DFHack::VersionInfoFactory> vif;
         // Module storage
         struct
         {
@@ -211,8 +243,11 @@ namespace DFHack
             Notes * pNotes;
             Graphic * pGraphic;
         } s_mods;
-        std::vector <Module *> allModules;
+        std::vector<std::unique_ptr<Module>> allModules;
         DFHack::PluginManager * plug_mgr;
+
+        std::vector<std::string> script_paths[2];
+        std::mutex script_path_mutex;
 
         // hotkey-related stuff
         struct KeyBinding {
@@ -226,9 +261,17 @@ namespace DFHack
         std::map<int, std::vector<KeyBinding> > key_bindings;
         std::map<int, bool> hotkey_states;
         std::string hotkey_cmd;
-        bool hotkey_set;
-        tthread::mutex * HotkeyMutex;
-        tthread::condition_variable * HotkeyCond;
+        enum hotkey_set_t {
+            NO,
+            SET,
+            SHUTDOWN,
+        };
+        hotkey_set_t hotkey_set;
+        std::mutex HotkeyMutex;
+        std::condition_variable HotkeyCond;
+
+        std::map<std::string, std::vector<std::string>> aliases;
+        std::recursive_mutex alias_mutex;
 
         bool SelectHotkey(int key, int modifiers);
 
@@ -236,40 +279,166 @@ namespace DFHack
         void *last_world_data_ptr;
         // for state change tracking
         void *last_local_map_ptr;
+        friend struct Screen::Hide;
         df::viewscreen *top_viewscreen;
         bool last_pause_state;
         // Very important!
         bool started;
+        // Additional state change scripts
+        std::vector<StateChangeScript> state_change_scripts;
 
-        tthread::mutex * misc_data_mutex;
+        std::mutex misc_data_mutex;
         std::map<std::string,void*> misc_data_map;
+
+        /*!
+         * \defgroup core_suspend CoreSuspender state handling serialization to
+         * DF memory.
+         * \sa DFHack::CoreSuspender
+         * \{
+         */
+        std::recursive_mutex CoreSuspendMutex;
+        std::condition_variable_any CoreWakeup;
+        std::atomic<std::thread::id> ownerThread;
+        std::atomic<size_t> toolCount;
+        //! \}
 
         friend class CoreService;
         friend class ServerConnection;
+        friend class CoreSuspender;
+        friend class CoreSuspenderBase;
+        friend struct CoreSuspendClaimMain;
+        friend struct CoreSuspendReleaseMain;
         ServerMain *server;
     };
 
-    class CoreSuspender {
-        Core *core;
+    class CoreSuspenderBase  : protected std::unique_lock<std::recursive_mutex> {
+    protected:
+        using parent_t = std::unique_lock<std::recursive_mutex>;
+        std::thread::id tid;
+
+        CoreSuspenderBase(std::defer_lock_t d) : CoreSuspenderBase{&Core::getInstance(), d} {}
+
+        CoreSuspenderBase(Core* core, std::defer_lock_t) :
+            /* Lock the core */
+            parent_t{core->CoreSuspendMutex,std::defer_lock},
+            /* Mark this thread to be the core owner */
+            tid{}
+        {}
     public:
-        CoreSuspender() : core(&Core::getInstance()) { core->Suspend(); }
-        CoreSuspender(Core *core) : core(core) { core->Suspend(); }
-        ~CoreSuspender() { core->Resume(); }
+        void lock()
+        {
+            auto& core = Core::getInstance();
+            parent_t::lock();
+            tid = core.ownerThread.exchange(std::this_thread::get_id(),
+                    std::memory_order_acquire);
+        }
+
+        void unlock()
+        {
+            auto& core = Core::getInstance();
+            /* Restore core owner to previous value */
+            core.ownerThread.store(tid, std::memory_order_release);
+            if (tid == std::thread::id{})
+                Lua::Core::Reset(core.getConsole(), "suspend");
+            parent_t::unlock();
+        }
+
+        bool owns_lock() const noexcept
+        {
+            return parent_t::owns_lock();
+        }
+
+        ~CoreSuspenderBase() {
+            if (owns_lock())
+                unlock();
+        }
+        friend class MainThread;
     };
 
-    /** Claims the current thread already has the suspend lock.
-     *  Strictly for use in callbacks from DF.
+    /*!
+     * CoreSuspender allows serialization to DF data with std::unique_lock like
+     * interface. It includes handling for recursive CoreSuspender calls and
+     * notification to main thread after all queue tools have been handled.
+     *
+     * State transitions are:
+     * - Startup setups Core::SuspendMutex to unlocked states
+     * - Core::Init locks Core::SuspendMutex until the thread exits or that thread
+     *   calls Core::Shutdown or Core::~Core.
+     * - Other thread request core suspend by atomic incrementation of Core::toolCount
+     *   and then locking Core::CoreSuspendMutex. After locking CoreSuspendMutex
+     *   success callers exchange their std::thread::id to Core::ownerThread.
+     * - Core::Update() makes sure that queued tools are run when it calls
+     *   Core::CoreWakup::wait. The wait keeps Core::CoreSuspendMutex unlocked
+     *   and waits until Core::toolCount is reduced back to zero.
+     * - CoreSuspender::~CoreSuspender() first stores the previous Core::ownerThread
+     *   back. In case of recursive call Core::ownerThread equals tid. If tis is
+     *   zero then we are releasing the recursive_mutex which means suspend
+     *   context is over. It is time to reset lua.
+     *   The last step is to decrement Core::toolCount and wakeup main thread if
+     *   no more tools are queued trying to acquire the
+     *   Core::CoreSuspenderMutex.
      */
-    class CoreSuspendClaimer {
-        Core *core;
-        int level;
+    class CoreSuspender : public CoreSuspenderBase {
+        using parent_t = CoreSuspenderBase;
     public:
-        CoreSuspendClaimer(bool base = false) : core(&Core::getInstance()) {
-            level = core->ClaimSuspend(base);
+        CoreSuspender() : CoreSuspender{&Core::getInstance()} { }
+        CoreSuspender(std::defer_lock_t d) : CoreSuspender{&Core::getInstance(),d} { }
+        CoreSuspender(bool) : CoreSuspender{&Core::getInstance()} { }
+        CoreSuspender(Core* core, bool) : CoreSuspender{core} { }
+        CoreSuspender(Core* core) :
+            CoreSuspenderBase{core, std::defer_lock}
+        {
+            lock();
         }
-        CoreSuspendClaimer(Core *core, bool base = false) : core(core) {
-            level = core->ClaimSuspend(base);
+        CoreSuspender(Core* core, std::defer_lock_t) :
+            CoreSuspenderBase{core, std::defer_lock}
+        {}
+
+        void lock()
+        {
+            auto& core = Core::getInstance();
+            core.toolCount.fetch_add(1, std::memory_order_relaxed);
+            parent_t::lock();
         }
-        ~CoreSuspendClaimer() { core->DisclaimSuspend(level); }
+
+        void unlock()
+        {
+            auto& core = Core::getInstance();
+            parent_t::unlock();
+            /* Notify core to continue when all queued tools have completed
+             * 0 = None wants to own the core
+             * 1+ = There are tools waiting core access
+             * fetch_add returns old value before subtraction
+             */
+            if (core.toolCount.fetch_add(-1, std::memory_order_relaxed) == 1)
+                core.CoreWakeup.notify_one();
+        }
+
+        ~CoreSuspender() {
+            if (owns_lock())
+                unlock();
+        }
     };
+
+    /*!
+     * Temporary release main thread ownership to allow alternative thread
+     * implement DF logic thread loop
+     */
+    struct DFHACK_EXPORT CoreSuspendReleaseMain {
+        CoreSuspendReleaseMain();
+        ~CoreSuspendReleaseMain();
+    };
+
+    /*!
+     * Temporary claim main thread ownership. This allows caller to call
+     * Core::Update from a different thread than original DF logic thread if
+     * logic thread has released main thread ownership with
+     * CoreSuspendReleaseMain
+     */
+    struct DFHACK_EXPORT CoreSuspendClaimMain {
+        CoreSuspendClaimMain();
+        ~CoreSuspendClaimMain();
+    };
+
+    using CoreSuspendClaimer = CoreSuspender;
 }

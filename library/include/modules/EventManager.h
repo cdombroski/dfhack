@@ -59,7 +59,7 @@ namespace DFHack {
 
             }
         };
-        
+
         struct InventoryItem {
             //it has to keep the id of an item because the item itself may have been deallocated
             int32_t itemId;
@@ -74,7 +74,7 @@ namespace DFHack {
             InventoryChangeData() {}
             InventoryChangeData(int32_t id_in, InventoryItem* old_in, InventoryItem* new_in): unitId(id_in), item_old(old_in), item_new(new_in) {}
         };
-        
+
         struct UnitAttackData {
             int32_t attacker;
             int32_t defender;
@@ -89,7 +89,7 @@ namespace DFHack {
             int32_t attackReport;
             int32_t defendReport;
         };
-        
+
         DFHACK_EXPORT void registerListener(EventType::EventType e, EventHandler handler, Plugin* plugin);
         DFHACK_EXPORT int32_t registerTick(EventHandler handler, int32_t when, Plugin* plugin, bool absolute=false);
         DFHACK_EXPORT void unregister(EventType::EventType e, EventHandler handler, Plugin* plugin);
@@ -116,7 +116,7 @@ namespace std {
         std::size_t operator()(const DFHack::EventManager::EventHandler& h) const {
             size_t r = 17;
             const size_t m = 65537;
-            r = m*(r+(int32_t)h.eventHandler);
+            r = m*(r+(intptr_t)h.eventHandler);
             r = m*(r+h.freq);
             return r;
         }
