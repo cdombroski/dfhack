@@ -75,6 +75,7 @@ using namespace std;
 #include "df/itemdef_trapcompst.h"
 #include "df/itemdef_weaponst.h"
 #include "df/job_item.h"
+#include "df/mandate.h"
 #include "df/map_block.h"
 #include "df/proj_itemst.h"
 #include "df/proj_list_link.h"
@@ -84,6 +85,7 @@ using namespace std;
 #include "df/ui.h"
 #include "df/unit.h"
 #include "df/unit_inventory_item.h"
+#include "df/vehicle.h"
 #include "df/vermin.h"
 #include "df/viewscreen_itemst.h"
 #include "df/world.h"
@@ -307,7 +309,7 @@ bool ItemTypeInfo::matches(const df::job_item &item, MaterialInfo *mat, bool ski
     RQ(1,extract_bearing_plant); RQ(1,extract_bearing_fish); RQ(1,extract_bearing_vermin);
     RQ(1,processable_to_vial); RQ(1,processable_to_bag); RQ(1,processable_to_barrel);
     RQ(1,solid); RQ(1,tameable_vermin); RQ(1,sand_bearing); RQ(1,milk); RQ(1,milkable);
-    RQ(1,not_bin); RQ(1,lye_bearing);
+    RQ(1,not_bin); RQ(1,lye_bearing); RQ(1, undisturbed);
 
     RQ(2,dye); RQ(2,dyeable); RQ(2,dyed); RQ(2,glass_making); RQ(2,screw);
     RQ(2,building_material); RQ(2,fire_safe); RQ(2,magma_safe);
@@ -423,6 +425,7 @@ bool ItemTypeInfo::matches(const df::job_item &item, MaterialInfo *mat, bool ski
         break;
 
     case THREAD:
+        OK(1,undisturbed);
     case CLOTH:
         OK(2,dyeable); OK(2,dyed);
         break;
@@ -891,7 +894,8 @@ bool DFHack::Items::moveToContainer(MapExtras::MapCache &mc, df::item *item, df:
     return true;
 }
 
-bool DFHack::Items::moveToBuilding(MapExtras::MapCache &mc, df::item *item, df::building_actual *building,int16_t use_mode)
+bool DFHack::Items::moveToBuilding(MapExtras::MapCache &mc, df::item *item, df::building_actual *building,
+    int16_t use_mode, bool force_in_building)
 {
     CHECK_NULL_POINTER(item);
     CHECK_NULL_POINTER(building);
@@ -914,7 +918,8 @@ bool DFHack::Items::moveToBuilding(MapExtras::MapCache &mc, df::item *item, df::
     item->pos.x=building->centerx;
     item->pos.y=building->centery;
     item->pos.z=building->z;
-    item->flags.bits.in_building=true;
+    if (use_mode == 2 || force_in_building)
+        item->flags.bits.in_building=true;
 
     ref->building_id=building->id;
     item->general_refs.push_back(ref);
@@ -1059,7 +1064,6 @@ int Items::getItemBaseValue(int16_t item_type, int16_t item_subtype, int16_t mat
     case item_type::CHAIN:
     case item_type::FLASK:
     case item_type::GOBLET:
-    case item_type::INSTRUMENT:
     case item_type::TOY:
     case item_type::CAGE:
     case item_type::BARREL:
@@ -1159,8 +1163,11 @@ int Items::getItemBaseValue(int16_t item_type, int16_t item_subtype, int16_t mat
     case item_type::MEAT:
     case item_type::PLANT:
     case item_type::PLANT_GROWTH:
-    case item_type::CHEESE:
         value = 2;
+        break;
+
+    case item_type::CHEESE:
+        value = 10;
         break;
 
     case item_type::FISH:
@@ -1219,6 +1226,10 @@ int Items::getItemBaseValue(int16_t item_type, int16_t item_subtype, int16_t mat
         value = 7;
         break;
 
+    case item_type::SHEET:
+        value = 5;
+        break;
+
     case item_type::PANTS:
         if (size_t(item_subtype) < world->raws.itemdefs.pants.size())
             value = world->raws.itemdefs.pants[item_subtype]->value;
@@ -1247,16 +1258,23 @@ int Items::getItemBaseValue(int16_t item_type, int16_t item_subtype, int16_t mat
     case item_type::FOOD:
         return 10;
 
-//  case item_type::ROCK:
-    default:
-        return 0;
-
     case item_type::TOOL:
         if (size_t(item_subtype) < world->raws.itemdefs.tools.size())
             value = world->raws.itemdefs.tools[item_subtype]->value;
         else
             value = 10;
         break;
+
+    case item_type::INSTRUMENT:
+        if (size_t(item_subtype) < world->raws.itemdefs.instruments.size())
+            value = world->raws.itemdefs.instruments[item_subtype]->value;
+        else
+            value = 10;
+        break;
+
+//  case item_type::ROCK:
+    default:
+        return 0;
     }
 
     MaterialInfo mat;
@@ -1336,6 +1354,7 @@ int Items::getValue(df::item *item)
 
 int32_t Items::createItem(df::item_type item_type, int16_t item_subtype, int16_t mat_type, int32_t mat_index, df::unit* unit) {
     //based on Quietust's plugins/createitem.cpp
+    CHECK_NULL_POINTER(unit);
     df::map_block* block = Maps::getTileBlock(unit->pos.x, unit->pos.y, unit->pos.z);
     CHECK_NULL_POINTER(block);
     df::reaction_product_itemst* prod = df::allocate<df::reaction_product_itemst>();
@@ -1362,23 +1381,128 @@ int32_t Items::createItem(df::item_type item_type, int16_t item_subtype, int16_t
         prod->product_dimension = 1;
         break;
     }
-    
+
     //makeItem
+    vector<df::reaction_product*> out_products;
     vector<df::item*> out_items;
     vector<df::reaction_reagent*> in_reag;
     vector<df::item*> in_items;
-    
+
     df::enums::game_type::game_type type = *df::global::gametype;
-    prod->produce(unit, &out_items, &in_reag, &in_items, 1, job_skill::NONE,
-            df::historical_entity::find(unit->civ_id),
-            ((type == df::enums::game_type::DWARF_MAIN) || (type == df::enums::game_type::DWARF_RECLAIM)) ? df::world_site::find(df::global::ui->site_id) : NULL);
+    prod->produce(unit, &out_products, &out_items, &in_reag, &in_items, 1, job_skill::NONE,
+            df::historical_entity::find(unit->civ_id), 0,
+            ((type == df::enums::game_type::DWARF_MAIN) || (type == df::enums::game_type::DWARF_RECLAIM)) ? df::world_site::find(df::global::ui->site_id) : NULL,
+            0);
     if ( out_items.size() != 1 )
         return -1;
-    
+
     for (size_t a = 0; a < out_items.size(); a++ ) {
         out_items[a]->moveToGround(unit->pos.x, unit->pos.y, unit->pos.z);
     }
-    
+
     return out_items[0]->id;
 }
 
+/*
+ * Trade Info
+ */
+
+bool Items::checkMandates(df::item *item)
+{
+    CHECK_NULL_POINTER(item);
+
+    for (df::mandate *mandate : world->mandates)
+    {
+        if (mandate->mode != df::mandate::T_mode::Export)
+            continue;
+
+        if (item->getType() != mandate->item_type ||
+            (mandate->item_subtype != -1 && item->getSubtype() != mandate->item_subtype))
+            continue;
+
+        if (mandate->mat_type != -1 && item->getMaterial() != mandate->mat_type)
+            continue;
+
+        if (mandate->mat_index != -1 && item->getMaterialIndex() != mandate->mat_index)
+            continue;
+
+        return false;
+    }
+
+    return true;
+}
+
+bool Items::canTrade(df::item *item)
+{
+    CHECK_NULL_POINTER(item);
+
+    if (item->flags.bits.owned || item->flags.bits.artifact || item->flags.bits.spider_web || item->flags.bits.in_job)
+        return false;
+
+    for (df::general_ref *ref : item->general_refs)
+    {
+        switch (ref->getType())
+        {
+        case general_ref_type::UNIT_HOLDER:
+            return false;
+
+        case general_ref_type::BUILDING_HOLDER:
+            return false;
+
+        default:
+            break;
+        }
+    }
+
+    for (df::specific_ref *ref : item->specific_refs)
+    {
+        if (ref->type == specific_ref_type::JOB)
+        {
+            // Ignore any items assigned to a job
+            return false;
+        }
+    }
+
+    return checkMandates(item);
+}
+
+bool Items::canTradeWithContents(df::item *item)
+{
+    CHECK_NULL_POINTER(item);
+
+    if (item->flags.bits.in_inventory)
+        return false;
+
+    if (!canTrade(item))
+        return false;
+
+    vector<df::item*> contained_items;
+    getContainedItems(item, &contained_items);
+    for (df::item *cit : contained_items)
+    {
+        if (!canTrade(cit))
+            return false;
+    }
+
+    return true;
+}
+
+bool Items::isRouteVehicle(df::item *item)
+{
+    CHECK_NULL_POINTER(item);
+    int id = item->getVehicleID();
+    if (id < 0) return false;
+
+    auto vehicle = df::vehicle::find(id);
+    return vehicle && vehicle->route_id >= 0;
+}
+
+bool Items::isSquadEquipment(df::item *item)
+{
+    CHECK_NULL_POINTER(item);
+    if (!ui)
+        return false;
+
+    auto &vec = ui->equipment.items_assigned[item->getType()];
+    return binsearch_index(vec, &df::item::id, item->id) >= 0;
+}

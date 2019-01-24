@@ -24,6 +24,7 @@ distribution.
 
 #include "Internal.h"
 
+#include <csignal>
 #include <string>
 #include <vector>
 #include <map>
@@ -47,6 +48,8 @@ distribution.
 #include "LuaTools.h"
 
 #include "MiscUtils.h"
+#include "DFHackVersion.h"
+#include "PluginManager.h"
 
 #include "df/job.h"
 #include "df/job_item.h"
@@ -280,9 +283,6 @@ static int lua_dfhack_is_interactive(lua_State *S)
 
 static int dfhack_lineedit_sync(lua_State *S, Console *pstream)
 {
-    if (!pstream)
-        return 2;
-
     const char *prompt = luaL_optstring(S, 1, ">> ");
     const char *hfile = luaL_optstring(S, 2, NULL);
 
@@ -293,10 +293,16 @@ static int dfhack_lineedit_sync(lua_State *S, Console *pstream)
     std::string ret;
     int rv = pstream->lineedit(prompt, ret, hist);
 
+    if (rv == Console::RETRY)
+        rv = 0; /* return empty string to lua */
+
     if (rv < 0)
     {
         lua_pushnil(S);
-        lua_pushstring(S, "input error");
+        if (rv == Console::SHUTDOWN)
+            lua_pushstring(S, "shutdown requested");
+        else
+            lua_pushstring(S, "input error");
         return 2;
     }
     else
@@ -316,7 +322,7 @@ static int yield_helper(lua_State *S)
 }
 
 namespace {
-    int dfhack_lineedit_cont(lua_State *L, int status, int)
+    int dfhack_lineedit_cont(lua_State *L, int status, lua_KContext)
     {
         if (Lua::IsSuccess(status))
             return lua_gettop(L) - 2;
@@ -330,8 +336,11 @@ static int dfhack_lineedit(lua_State *S)
     lua_settop(S, 2);
 
     Console *pstream = get_console(S);
-    if (!pstream)
+    if (!pstream) {
+        lua_pushnil(S);
+        lua_pushstring(S, "no console");
         return 2;
+    }
 
     lua_rawgetp(S, LUA_REGISTRYINDEX, &DFHACK_QUERY_COROTABLE_TOKEN);
     lua_rawgetp(S, -1, S);
@@ -352,6 +361,35 @@ static int dfhack_lineedit(lua_State *S)
 /*
  * Exception handling
  */
+
+volatile std::sig_atomic_t lstop = 0;
+
+static void interrupt_hook (lua_State *L, lua_Debug *ar);
+static void interrupt_init (lua_State *L)
+{
+    lua_sethook(L, interrupt_hook, LUA_MASKCOUNT, 256);
+}
+
+static void interrupt_hook (lua_State *L, lua_Debug *ar)
+{
+    if (lstop)
+    {
+        lstop = 0;
+        interrupt_init(L);  // Restore default settings if necessary
+        luaL_error(L, "interrupted!");
+    }
+}
+
+bool DFHack::Lua::Interrupt (bool force)
+{
+    lua_State *L = Lua::Core::State;
+    if (L->hook != interrupt_hook && !force)
+        return false;
+    if (force)
+        lua_sethook(L, interrupt_hook, LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE | LUA_MASKCOUNT, 1);
+    lstop = 1;
+    return true;
+}
 
 static int DFHACK_EXCEPTION_META_TOKEN = 0;
 
@@ -604,7 +642,7 @@ static bool do_finish_pcall(lua_State *L, bool success, int base = 1, int space 
 }
 
 namespace {
-    int safecall_cont(lua_State *L, int status, int)
+    int safecall_cont(lua_State *L, int status, lua_KContext)
     {
         bool success = do_finish_pcall(L, Lua::IsSuccess(status));
 
@@ -921,6 +959,7 @@ bool DFHack::Lua::SafeCallString(color_ostream &out, lua_State *state, const std
         env_idx = lua_absindex(state, env_idx);
 
     int base = lua_gettop(state);
+    (void)base; // used in assert()
 
     // Parse the code
     if (luaL_loadbuffer(state, code.data(), code.size(), debug_tag) != LUA_OK)
@@ -1025,7 +1064,11 @@ bool DFHack::Lua::RunCoreQueryLoop(color_ostream &out, lua_State *state,
             prompt = ">> ";
 
         std::string curline;
-        con.lineedit(prompt,curline,hist);
+        while((rv = con.lineedit(prompt,curline,hist)) == Console::RETRY);
+        if (rv <= Console::FAILURE) {
+            rv = rv == Console::SHUTDOWN ? LUA_OK : LUA_ERRRUN;
+            break;
+        }
         hist.add(curline);
 
         {
@@ -1106,7 +1149,7 @@ static bool do_invoke_cleanup(lua_State *L, int nargs, int errorfun, bool succes
     return success;
 }
 
-int dfhack_cleanup_cont(lua_State *L, int status, int)
+int dfhack_cleanup_cont(lua_State *L, int status, lua_KContext)
 {
     bool success = Lua::IsSuccess(status);
 
@@ -1214,6 +1257,11 @@ static int dfhack_open_plugin(lua_State *L)
     return 0;
 }
 
+static int gettop_wrapper(lua_State *L, int, lua_KContext)
+{
+    return lua_gettop(L);
+}
+
 static int dfhack_curry_wrap(lua_State *L)
 {
     int nargs = lua_gettop(L);
@@ -1229,7 +1277,7 @@ static int dfhack_curry_wrap(lua_State *L)
     for (int i = 1; i <= ncurry; i++)
         lua_copy(L, lua_upvalueindex(i+1), i);
 
-    lua_callk(L, scount-1, LUA_MULTRET, 0, lua_gettop);
+    lua_callk(L, scount-1, LUA_MULTRET, 0, gettop_wrapper);
 
     return lua_gettop(L);
 }
@@ -1560,6 +1608,8 @@ lua_State *DFHack::Lua::Open(color_ostream &out, lua_State *state)
     if (!state)
         state = luaL_newstate();
 
+    interrupt_init(state);
+
     luaL_openlibs(state);
     AttachDFGlobals(state);
 
@@ -1587,8 +1637,12 @@ lua_State *DFHack::Lua::Open(color_ostream &out, lua_State *state)
     lua_rawsetp(state, LUA_REGISTRYINDEX, &DFHACK_BASE_G_TOKEN);
     lua_setfield(state, -2, "BASE_G");
 
-    lua_pushstring(state, DFHACK_VERSION);
+    lua_pushstring(state, Version::dfhack_version());
     lua_setfield(state, -2, "VERSION");
+    lua_pushstring(state, Version::df_version());
+    lua_setfield(state, -2, "DF_VERSION");
+    lua_pushstring(state, Version::dfhack_release());
+    lua_setfield(state, -2, "RELEASE");
 
     lua_pushboolean(state, IsCoreContext(state));
     lua_setfield(state, -2, "is_core_context");
@@ -1663,7 +1717,11 @@ lua_State *DFHack::Lua::Open(color_ostream &out, lua_State *state)
         Lua::Core::InitCoreContext();
 
     // load dfhack.lua
-    Require(out, state, "dfhack");
+    if (!Require(out, state, "dfhack"))
+    {
+        out.printerr("Could not load dfhack.lua\n");
+        return NULL;
+    }
 
     lua_settop(state, 0);
     if (!lua_checkstack(state, 64))
@@ -1830,15 +1888,17 @@ void DFHack::Lua::Core::onUpdate(color_ostream &out)
         run_timers(out, State, tick_timers, frame[1], world->frame_counter);
 }
 
-void DFHack::Lua::Core::Init(color_ostream &out)
+bool DFHack::Lua::Core::Init(color_ostream &out)
 {
-    if (State)
-        return;
+    if (State) {
+        out.printerr("state already exists\n");
+        return false;
+    }
 
     State = luaL_newstate();
 
     // Calls InitCoreContext after checking IsCoreContext
-    Lua::Open(out, State);
+    return (Lua::Open(out, State) != NULL);
 }
 
 static void Lua::Core::InitCoreContext()

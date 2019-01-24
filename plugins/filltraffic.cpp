@@ -44,7 +44,7 @@ DFHACK_PLUGIN("filltraffic");
 DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <PluginCommand> &commands)
 {
     commands.push_back(PluginCommand(
-        "filltraffic","Flood-fill with selected traffic designation from cursor",
+        "filltraffic","Flood-fill selected traffic designation from cursor",
         filltraffic, Gui::cursor_hotkey,
         "  Flood-fill selected traffic type from the cursor.\n"
         "Traffic Type Codes:\n"
@@ -71,14 +71,14 @@ DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <Plug
         "  L: Low Traffic\n"
         "  R: Restricted Traffic\n"
     ));
-	commands.push_back(PluginCommand(
-		"restrictliquids","Restrict on every visible square with liquid",
-		restrictLiquid, false, ""
-	));
-	commands.push_back(PluginCommand(
-		"restrictice","Restrict traffic on squares above visible ice",
-		restrictIce, false, ""
-	));
+    commands.push_back(PluginCommand(
+        "restrictliquids","Restrict on every visible square with liquid",
+        restrictLiquid, false, ""
+    ));
+    commands.push_back(PluginCommand(
+        "restrictice","Restrict traffic on squares above visible ice",
+        restrictIce, false, ""
+    ));
     return CR_OK;
 }
 
@@ -215,7 +215,7 @@ command_result filltraffic(color_ostream &out, std::vector<std::string> & params
             {
                 flood.push(DFCoord(xy.x - 1, xy.y, xy.z));
             }
-            if (xy.x < tx_max - 1)
+            if (xy.x < int32_t(tx_max) - 1)
             {
                 flood.push(DFCoord(xy.x + 1, xy.y, xy.z));
             }
@@ -223,7 +223,7 @@ command_result filltraffic(color_ostream &out, std::vector<std::string> & params
             {
                 flood.push(DFCoord(xy.x, xy.y - 1, xy.z));
             }
-            if (xy.y < ty_max - 1)
+            if (xy.y < int32_t(ty_max) - 1)
             {
                 flood.push(DFCoord(xy.x, xy.y + 1, xy.z));
             }
@@ -234,7 +234,7 @@ command_result filltraffic(color_ostream &out, std::vector<std::string> & params
                 {
                     flood.push(DFCoord(xy.x, xy.y, xy.z - 1));
                 }
-                if (xy.z < z_max && HighPassable(tt))
+                if (xy.z < int32_t(z_max) && HighPassable(tt))
                 {
                     flood.push(DFCoord(xy.x, xy.y, xy.z + 1));
                 }
@@ -285,7 +285,7 @@ command_result restrictLiquid(color_ostream &out, std::vector<std::string> & par
 
 command_result restrictIce(color_ostream &out, std::vector<std::string> & params)
 {
-	return setAllMatching(out, restrictIceProc);
+    return setAllMatching(out, restrictIceProc);
 }
 
 //Helper function for writing new functions that check every tile on the map.
@@ -337,11 +337,11 @@ command_result setAllMatching(color_ostream &out, checkTile checkProc,
     out.print("Setting traffic...\n");
 
     //Loop through every single tile
-    for(uint32_t x = minCoord.x; x <= maxCoord.x; x++)
+    for(int32_t x = minCoord.x; x <= maxCoord.x; x++)
     {
-        for(uint32_t y = minCoord.y; y <= maxCoord.y; y++)
+        for(int32_t y = minCoord.y; y <= maxCoord.y; y++)
         {
-            for(uint32_t z = minCoord.z; z <= maxCoord.z; z++)
+            for(int32_t z = minCoord.z; z <= maxCoord.z; z++)
             {
                 DFCoord tile = DFCoord(x, y, z);
                 checkProc(tile, MCache);
@@ -383,29 +383,29 @@ void allRestricted(DFCoord coord, MapExtras::MapCache &map)
 //Restrict traffic if tile is visible and liquid is present.
 void restrictLiquidProc(DFCoord coord, MapExtras::MapCache &map)
 {
-	df::tile_designation des = map.designationAt(coord);
-	if ((des.bits.hidden == 0) && (des.bits.flow_size != 0))
-	{
-		des.bits.traffic = tile_traffic::Restricted;
-		map.setDesignationAt(coord, des);
-	}
+    df::tile_designation des = map.designationAt(coord);
+    if ((des.bits.hidden == 0) && (des.bits.flow_size != 0))
+    {
+        des.bits.traffic = tile_traffic::Restricted;
+        map.setDesignationAt(coord, des);
+    }
 }
 
 //Restrict traffice if tile is above visible ice wall.
 void restrictIceProc(DFCoord coord, MapExtras::MapCache &map)
 {
-	//There is no ice below the bottom of the map.
-	if (coord.z == 0)
-		return;
+    //There is no ice below the bottom of the map.
+    if (coord.z == 0)
+        return;
 
-	DFCoord tile_below = DFCoord(coord.x, coord.y, coord.z - 1);
-	df::tiletype tt = map.tiletypeAt(tile_below);
-	df::tile_designation des = map.designationAt(tile_below);
+    DFCoord tile_below = DFCoord(coord.x, coord.y, coord.z - 1);
+    df::tiletype tt = map.tiletypeAt(tile_below);
+    df::tile_designation des = map.designationAt(tile_below);
 
-	if ((des.bits.hidden == 0) && (tileMaterial(tt) == tiletype_material::FROZEN_LIQUID))
-	{
-		des = map.designationAt(coord);
-		des.bits.traffic = tile_traffic::Restricted;
-		map.setDesignationAt(coord, des);
-	}
+    if ((des.bits.hidden == 0) && (tileMaterial(tt) == tiletype_material::FROZEN_LIQUID))
+    {
+        des = map.designationAt(coord);
+        des.bits.traffic = tile_traffic::Restricted;
+        map.setDesignationAt(coord, des);
+    }
 }

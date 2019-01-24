@@ -1,25 +1,24 @@
 // changelayer plugin
 // allows changing the material type of geological layers
 
-// some headers required for a plugin. Nothing special, just the basics.
+#include "Console.h"
 #include "Core.h"
-#include <Console.h>
-#include <Export.h>
-#include <PluginManager.h>
-
-// DF data structure definition headers
 #include "DataDefs.h"
-#include "modules/Maps.h"
-#include "modules/Materials.h"
-#include "modules/MapCache.h"
-#include "modules/Gui.h"
-
+#include "Export.h"
+#include "PluginManager.h"
 #include "TileTypes.h"
 
+#include "modules/Gui.h"
+#include "modules/MapCache.h"
+#include "modules/Maps.h"
+#include "modules/Materials.h"
+
+// DF data structure definition headers
+#include "df/region_map_entry.h"
+#include "df/world.h"
 #include "df/world_data.h"
 #include "df/world_geo_biome.h"
 #include "df/world_geo_layer.h"
-#include "df/region_map_entry.h"
 
 using namespace DFHack;
 using namespace df::enums;
@@ -32,8 +31,8 @@ DFHACK_PLUGIN("changelayer");
 REQUIRE_GLOBAL(world);
 REQUIRE_GLOBAL(cursor);
 
-const string changelayer_help = 
-    "  Allows to change the material of whole geology layers.\n" 
+const string changelayer_help =
+    "  Allows to change the material of whole geology layers.\n"
     "  Can have impact on all surrounding regions, not only your embark!\n"
     "  By default changing stone to soil and vice versa is not allowed.\n"
     "  By default changes only the layer at the cursor position.\n"
@@ -47,7 +46,7 @@ const string changelayer_help =
     "  all_biomes - Change layer for all biomes on your map.\n"
     "               Result may be undesirable since the same layer\n"
     "               can AND WILL be on different z-levels for different biomes.\n"
-    "               Use the tool 'probe' to get an idea how layers and biomes\n" 
+    "               Use the tool 'probe' to get an idea how layers and biomes\n"
     "               are distributed on your map.\n"
     "  all_layers - Change all layers on your map.\n"
     "               Candy mountain, anyone?\n"
@@ -70,7 +69,7 @@ const string changelayer_help =
     "  changelayer MARBLE allbiomes alllayers\n"
     "    Convert all layers of all biomes into marble.\n";
 
-const string changelayer_trouble = 
+const string changelayer_trouble =
     "Known problems with changelayer:\n\n"
     "  Nothing happens, the material stays the old.\n"
     "    Pause/unpause the game and/or move the cursor a bit. Then retry.\n"
@@ -108,7 +107,7 @@ static bool warned = false;
 
 command_result changelayer (color_ostream &out, std::vector <std::string> & parameters)
 {
-    CoreSuspender suspend; 
+    CoreSuspender suspend;
 
     string material;
     bool force = false;
@@ -121,12 +120,12 @@ command_result changelayer (color_ostream &out, std::vector <std::string> & para
     {
         if(parameters[i] == "help" || parameters[i] == "?")
         {
-            out.print(changelayer_help.c_str());
+            out.print("%s",changelayer_help.c_str());
             return CR_OK;
         }
         if(parameters[i] == "trouble")
         {
-            out.print(changelayer_trouble.c_str());
+            out.print("%s",changelayer_trouble.c_str());
             return CR_OK;
         }
         if(parameters[i] == "force")
@@ -209,13 +208,13 @@ command_result changelayer (color_ostream &out, std::vector <std::string> & para
 
     // there is no Maps::WriteGeology or whatever, and I didn't want to mess with the library and add it
     // so I copied the stuff which reads the geology information and modified it to be able to change it
-    // 
+    //
     // a more elegant solution would probably look like this:
-    // 1) modify Maps::ReadGeology to accept and fill one more optional vector 
+    // 1) modify Maps::ReadGeology to accept and fill one more optional vector
     //    where the geolayer ids of the 9 biomes are stored
     // 2) call ReadGeology here, modify the data in the vectors without having to do all that map stuff
     // 3) write Maps::WriteGeology, pass the vectors, let it do it's work
-    // Step 1) is optional, but it would make implementing 3) easier. 
+    // Step 1) is optional, but it would make implementing 3) easier.
     // Otherwise that "check which geo_index is used by biome X" loop would need to be done again.
 
     // no need to touch the same geology more than once
@@ -226,17 +225,17 @@ command_result changelayer (color_ostream &out, std::vector <std::string> & para
     // iterate over 8 surrounding regions + local region
     for (int i = eNorthWest; i < eBiomeCount; i++)
     {
-        if(verbose) 
+        if(verbose)
             out << "---Biome: " << i;
-        if(!all_biomes && i!=biome)
+        if(!all_biomes && uint32_t(i)!=biome)
         {
-            if(verbose) 
+            if(verbose)
                 out << "-skipping" << endl;
             continue;
         }
         else
         {
-            if(verbose) 
+            if(verbose)
                 out << "-checking" << endl;
         }
 
@@ -258,7 +257,7 @@ command_result changelayer (color_ostream &out, std::vector <std::string> & para
             out << "geoindex: " << geoindex << endl;
 
         bool skip = false;
-        for(int g=0; g<v_geoprocessed.size(); g++)
+        for(int g=0; size_t(g)<v_geoprocessed.size(); g++)
         {
             if(v_geoprocessed.at(g)==geoindex)
             {
@@ -304,9 +303,9 @@ command_result changelayer (color_ostream &out, std::vector <std::string> & para
                 if(conversionAllowed(out, mat_new, mat_old, force))
                 {
                     if(verbose)
-                        out << "changing geolayer " << j 
-                            << " from " << mat_old.getToken() 
-                            << " to " << mat_new.getToken() 
+                        out << "changing geolayer " << j
+                            << " from " << mat_old.getToken()
+                            << " to " << mat_new.getToken()
                             << endl;
                     geolayers[j]->mat_index = mat_new.index;
                 }
@@ -329,7 +328,7 @@ command_result changelayer (color_ostream &out, std::vector <std::string> & para
     }
 
     out.print("Done.\n");
-    
+
     // Give control back to DF.
     return CR_OK;
 }

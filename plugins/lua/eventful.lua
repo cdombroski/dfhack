@@ -1,7 +1,7 @@
 local _ENV = mkmodule('plugins.eventful')
 --[[
-    
-    
+
+
 --]]
 local function getShopName(btype,bsubtype,bcustom)
     local typenames_shop={[df.workshop_type.Carpenters]="CARPENTERS",[df.workshop_type.Farmers]="FARMERS",
@@ -22,13 +22,13 @@ local function getShopName(btype,bsubtype,bcustom)
         [df.furnace_type.MagmaGlassFurnace]="MAGMA_GLASS_FURNACE",[df.furnace_type.MagmaKiln]="MAGMA_KILN",
         [df.furnace_type.Kiln]="KILN"}
     if btype==df.building_type.Workshop then
-        if typenames_shop[bsubtype]~=nil then 
+        if typenames_shop[bsubtype]~=nil then
             return typenames_shop[bsubtype]
         else
             return df.building_def_workshopst.find(bcustom).code
         end
     elseif btype==df.building_type.Furnace then
-        if typenames_furnace[bsubtype]~=nil then 
+        if typenames_furnace[bsubtype]~=nil then
             return typenames_furnace[bsubtype]
         else
             return df.building_def_furnacest.find(bcustom).code
@@ -44,9 +44,9 @@ local function unregall(state)
         _registeredStuff={}
     end
 end
-local function onReact(reaction,unit,input_items,input_reagents,output_items,call_native)
+local function onReact(reaction,reaction_product,unit,input_items,input_reagents,output_items,call_native)
     if _registeredStuff.reactionCallbacks and _registeredStuff.reactionCallbacks[reaction.code] then
-        _registeredStuff.reactionCallbacks[reaction.code](reaction,unit,input_items,input_reagents,output_items,call_native)
+        _registeredStuff.reactionCallbacks[reaction.code](reaction,reaction_product,unit,input_items,input_reagents,output_items,call_native)
     end
 end
 local function onPostSidebar(workshop)
@@ -105,13 +105,15 @@ function registerSidebar(shop_name,callback)
         dfhack.onStateChange.eventful=unregall
     else
         local function drawSidebar( wshop )
-            local valid_focus="dwarfmode/QueryBuilding/Some"
+            local valid_focus="dwarfmode/QueryBuilding"
+            local another_overlay="dfhack/lua/WorkshopOverlay"
             if wshop:getMaxBuildStage()==wshop:getBuildStage() then
                 local sidebar=callback{workshop=wshop}
-                if string.sub(dfhack.gui.getCurFocus(),1,#valid_focus)==valid_focus then
-                    sidebar:show()
-                else
-                    sidebar:show(dfhack.gui.getCurViewscreen(true).parent)
+                if string.sub(dfhack.gui.getCurFocus(true),1,#another_overlay)==another_overlay then
+                    dfhack.screen.dismiss(dfhack.gui.getCurViewscreen(true))
+                end
+                if string.sub(dfhack.gui.getCurFocus(true),1,#valid_focus)==valid_focus then
+                    sidebar:show(dfhack.gui.getCurViewscreen(true))
                 end
             end
         end

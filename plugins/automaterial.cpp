@@ -14,6 +14,7 @@
 // DF data structure definition headers
 #include "DataDefs.h"
 #include "MiscUtils.h"
+#include "TileTypes.h"
 #include "df/build_req_choice_genst.h"
 #include "df/build_req_choice_specst.h"
 #include "df/construction_type.h"
@@ -25,6 +26,7 @@
 #include "df/job.h"
 #include "df/world.h"
 #include "df/building_constructionst.h"
+#include "df/job_item.h"
 
 #include "modules/Gui.h"
 #include "modules/Screen.h"
@@ -32,9 +34,9 @@
 #include "modules/Constructions.h"
 #include "modules/Buildings.h"
 #include "modules/Maps.h"
+#include "modules/MapCache.h"
 
-#include "TileTypes.h"
-#include "df/job_item.h"
+#include "uicommon.h"
 
 using namespace std;
 using std::map;
@@ -59,46 +61,20 @@ struct MaterialDescriptor
 
     bool matches(const MaterialDescriptor &a) const
     {
-        return a.valid && valid && 
-            a.type == type && 
+        return a.valid && valid &&
+            a.type == type &&
             a.index == index &&
             a.item_type == item_type &&
             a.item_subtype == item_subtype;
     }
 };
 
-
-static command_result automaterial_cmd(color_ostream &out, vector <string> & parameters)
-{
-    return CR_OK;
-}
-
 DFhackCExport command_result plugin_shutdown ( color_ostream &out )
 {
     return CR_OK;
 }
 
-void OutputString(int8_t color, int &x, int &y, const std::string &text, bool newline = false, int left_margin = 0)
-{
-    Screen::paintString(Screen::Pen(' ', color, 0), x, y, text);
-    if (newline)
-    {
-        ++y;
-        x = left_margin;
-    }
-    else
-        x += text.length();
-}
-
-void OutputHotkeyString(int &x, int &y, const char *text, const char *hotkey, bool newline = false, int left_margin = 0, int8_t color = COLOR_WHITE)
-{
-    OutputString(10, x, y, hotkey);
-    string display(": ");
-    display.append(text);
-    OutputString(color, x, y, display, newline, left_margin);
-}
-
-void OutputToggleString(int &x, int &y, const char *text, const char *hotkey, bool state, bool newline = true, int left_margin = 0, int8_t color = COLOR_WHITE)
+void AMOutputToggleString(int &x, int &y, const char *text, const char *hotkey, bool state, bool newline = true, int left_margin = 0, int8_t color = COLOR_WHITE)
 {
     OutputHotkeyString(x, y, text, hotkey);
     OutputString(COLOR_WHITE, x, y, ": ");
@@ -108,16 +84,7 @@ void OutputToggleString(int &x, int &y, const char *text, const char *hotkey, bo
         OutputString(COLOR_GREY, x, y, "Disabled", newline, left_margin);
 }
 
-static string int_to_string(int i)
-{
-    return static_cast<ostringstream*>( &(ostringstream() << i))->str();
-}
-
 //START UI Functions
-struct coord32_t
-{
-    int32_t x, y, z;
-};
 
 static enum t_box_select_mode {SELECT_FIRST, SELECT_SECOND, SELECT_MATERIALS, AUTOSELECT_MATERIALS} box_select_mode = SELECT_FIRST;
 static coord32_t box_first, box_second;
@@ -141,15 +108,15 @@ static bool allow_future_placement = false;
 
 static inline bool in_material_choice_stage()
 {
-    return Gui::build_selector_hotkey(Core::getTopViewscreen()) && 
+    return Gui::build_selector_hotkey(Core::getTopViewscreen()) &&
         ui_build_selector->building_type == df::building_type::Construction &&
-        ui->main.mode == ui_sidebar_mode::Build && 
+        ui->main.mode == ui_sidebar_mode::Build &&
         ui_build_selector->stage == 2;
 }
 
 static inline bool in_placement_stage()
 {
-    return Gui::dwarfmode_hotkey(Core::getTopViewscreen()) && 
+    return Gui::dwarfmode_hotkey(Core::getTopViewscreen()) &&
         ui->main.mode == ui_sidebar_mode::Build &&
         ui_build_selector &&
         ui_build_selector->building_type == df::building_type::Construction &&
@@ -158,7 +125,7 @@ static inline bool in_placement_stage()
 
 static inline bool in_type_choice_stage()
 {
-    return Gui::dwarfmode_hotkey(Core::getTopViewscreen()) && 
+    return Gui::dwarfmode_hotkey(Core::getTopViewscreen()) &&
         ui->main.mode == ui_sidebar_mode::Build &&
         ui_build_selector &&
         ui_build_selector->building_type < 0;
@@ -269,7 +236,7 @@ static bool check_autoselect(MaterialDescriptor &material, bool toggle)
     size_t idx;
     if (is_material_in_autoselect(idx, material))
     {
-        if (toggle) 
+        if (toggle)
             vector_erase_at(get_curr_constr_prefs(), idx);
 
         return true;
@@ -440,7 +407,7 @@ static bool is_valid_building_site(building_site &site, bool orthogonal_check, b
     }
     else if (orthogonal_check)
     {
-        if (shape != tiletype_shape::RAMP && 
+        if (shape != tiletype_shape::RAMP &&
             shape_basic != tiletype_shape_basic::Floor &&
             shape_basic != tiletype_shape_basic::Stair)
             return false;
@@ -455,24 +422,14 @@ static bool is_valid_building_site(building_site &site, bool orthogonal_check, b
         }
         else
         {
-            if (shape_basic != tiletype_shape_basic::Floor)
+            if (shape != tiletype_shape::STAIR_DOWN && shape_basic != tiletype_shape_basic::Floor)
                 return false;
 
-            if (material == tiletype_material::CONSTRUCTION)
+            // Can build on top of a wall, but not on other construction
+            auto construction = Constructions::findAtTile(site.pos);
+            if (construction)
             {
-                // Can build on top of a wall, but not on a constructed floor
-                df::coord pos_below = site.pos;
-                pos_below.z--;
-                if (!Maps::isValidTilePos(pos_below))
-                    return false;
-
-                auto ttype = Maps::getTileType(pos_below);
-                if (!ttype)
-                    return false;
-
-                auto shape = tileShape(*ttype);
-                auto shapeBasic = tileShapeBasic(shape);
-                if (tileShapeBasic(shape) != tiletype_shape_basic::Wall)
+                if (construction->flags.bits.top_of_wall==0)
                     return false;
             }
 
@@ -677,7 +634,7 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
 
             x = x - vport.x + 1;
             y = y - vport.y + 1;
-            OutputString(COLOR_GREEN, x, y, "X");
+            OutputString(COLOR_GREEN, x, y, "X", false, 0, 0, true /* map */);
         }
         else if (show_box_selection && box_select_mode == SELECT_SECOND)
         {
@@ -697,7 +654,7 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
 
                     int32_t x = xB - vport.x + 1;
                     int32_t y = yB - vport.y + 1;
-                    OutputString(color, x, y, "X");
+                    OutputString(color, x, y, "X", false, 0, 0, true /* map */);
                 }
             }
         }
@@ -707,7 +664,7 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
             {
                 int32_t x = it->pos.x - vport.x + 1;
                 int32_t y = it->pos.y - vport.y + 1;
-                OutputString(COLOR_GREEN, x, y, "X");
+                OutputString(COLOR_GREEN, x, y, "X", false, 0, 0, true /* map */);
             }
         }
     }
@@ -905,8 +862,7 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
     void move_cursor(df::coord &pos)
     {
         Gui::setCursorCoords(pos.x, pos.y, pos.z);
-        send_key(interface_key::CURSOR_DOWN_Z);
-        send_key(interface_key::CURSOR_UP_Z);
+        Gui::refreshSidebar();
     }
 
     void move_cursor(coord32_t &pos)
@@ -945,7 +901,7 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
             {
                 // First valid site is guaranteed to be anchored, either on a tile or against a valid orthogonal tile
                 // Use it as an anchor point to generate materials list
-                anchor = valid_building_sites.front(); 
+                anchor = valid_building_sites.front();
                 valid_building_sites.pop_front();
                 valid_building_sites.push_back(anchor);
             }
@@ -1057,8 +1013,8 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
         int16_t last_used_constr_subtype = (in_material_choice_stage()) ?  ui_build_selector->building_subtype : -1;
         INTERPOSE_NEXT(feed)(input);
 
-        if (revert_to_last_used_type && 
-            last_used_constr_subtype >= 0 && 
+        if (revert_to_last_used_type &&
+            last_used_constr_subtype >= 0 &&
             in_type_choice_stage() &&
             hotkeys.find(last_used_constr_subtype) != hotkeys.end())
         {
@@ -1123,29 +1079,29 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
             MaterialDescriptor material = get_material_in_list(ui_build_selector->sel_index);
             if (material.valid)
             {
-                OutputToggleString(x, y, "Autoselect", "a", check_autoselect(material, false), true, left_margin);
+                AMOutputToggleString(x, y, "Autoselect", "a", check_autoselect(material, false), true, left_margin);
 
                 if (box_select_mode == SELECT_MATERIALS)
                 {
                     ++y;
                     OutputString(COLOR_BROWN, x, y, "Construction:", true, left_margin);
-                    OutputString(COLOR_WHITE, x, y, int_to_string(valid_building_sites.size() + 1) + " tiles to fill", true, left_margin);
+                    OutputString(COLOR_WHITE, x, y, int_to_string(valid_building_sites.size()) + " tiles to fill", true, left_margin);
                 }
             }
         }
         else if (in_placement_stage() && ui_build_selector->building_subtype < 7)
         {
             OutputString(COLOR_BROWN, x, y, "DFHack Options", true, left_margin);
-            OutputToggleString(x, y, "Auto Mat-select", "a", auto_choose_materials, true, left_margin);
-            OutputToggleString(x, y, "Reselect Type", "t", revert_to_last_used_type, true, left_margin);
+            AMOutputToggleString(x, y, "Auto Mat-select", "a", auto_choose_materials, true, left_margin);
+            AMOutputToggleString(x, y, "Reselect Type", "t", revert_to_last_used_type, true, left_margin);
 
             ++y;
-            OutputToggleString(x, y, "Box Select", "b", box_select_enabled, true, left_margin);
+            AMOutputToggleString(x, y, "Box Select", "b", box_select_enabled, true, left_margin);
             if (box_select_enabled)
             {
-                OutputToggleString(x, y, "Show Box Mask", "x", show_box_selection, true, left_margin);
+                AMOutputToggleString(x, y, "Show Box Mask", "x", show_box_selection, true, left_margin);
                 OutputHotkeyString(x, y, (hollow_selection) ? "Make Solid" : "Make Hollow", "h", true, left_margin);
-                OutputToggleString(x, y, "Open Placement", "o", allow_future_placement, true, left_margin);
+                AMOutputToggleString(x, y, "Open Placement", "o", allow_future_placement, true, left_margin);
             }
             ++y;
             if (box_select_enabled)
@@ -1162,6 +1118,7 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
                     break;
 
                 case SELECT_SECOND:
+                {
                     OutputString(COLOR_GREEN, x, y, "Choose second corner", true, left_margin);
 
                     int32_t curr_x, curr_y, curr_z;
@@ -1174,7 +1131,12 @@ struct jobutils_hook : public df::viewscreen_dwarfmodest
 
                     int cx = box_first.x;
                     int cy = box_first.y;
-                    OutputString(COLOR_BROWN, cx, cy, "X");
+                    OutputString(COLOR_BROWN, cx, cy, "X", false, 0, 0, true /* map */);
+                    break;
+                }
+
+                default:
+                    break;
                 }
 
                 OutputString(COLOR_BROWN, x, ++y, "Ignore Building Restrictions", true, left_margin);

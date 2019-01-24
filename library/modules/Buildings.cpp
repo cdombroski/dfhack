@@ -49,30 +49,43 @@ using namespace std;
 using namespace DFHack;
 
 #include "DataDefs.h"
-#include "df/world.h"
-#include "df/ui.h"
-#include "df/ui_look_list.h"
-#include "df/d_init.h"
-#include "df/item.h"
-#include "df/unit.h"
-#include "df/job.h"
-#include "df/job_item.h"
-#include "df/general_ref_building_holderst.h"
-#include "df/buildings_other_id.h"
-#include "df/building_design.h"
-#include "df/building_def.h"
+
 #include "df/building_axle_horizontalst.h"
-#include "df/building_trapst.h"
+#include "df/building_bars_floorst.h"
+#include "df/building_bars_verticalst.h"
 #include "df/building_bridgest.h"
-#include "df/building_coffinst.h"
+#include "df/building_cagest.h"
 #include "df/building_civzonest.h"
-#include "df/building_stockpilest.h"
+#include "df/building_coffinst.h"
+#include "df/building_def.h"
+#include "df/building_design.h"
+#include "df/building_floodgatest.h"
 #include "df/building_furnacest.h"
-#include "df/building_workshopst.h"
+#include "df/building_grate_floorst.h"
+#include "df/building_grate_wallst.h"
+#include "df/building_rollersst.h"
 #include "df/building_screw_pumpst.h"
+#include "df/building_stockpilest.h"
+#include "df/building_trapst.h"
 #include "df/building_water_wheelst.h"
 #include "df/building_wellst.h"
-#include "df/building_rollersst.h"
+#include "df/building_workshopst.h"
+#include "df/buildings_other_id.h"
+#include "df/d_init.h"
+#include "df/dfhack_room_quality_level.h"
+#include "df/general_ref_building_holderst.h"
+#include "df/general_ref_contains_unitst.h"
+#include "df/item.h"
+#include "df/item_cagest.h"
+#include "df/job.h"
+#include "df/job_item.h"
+#include "df/map_block.h"
+#include "df/tile_occupancy.h"
+#include "df/ui.h"
+#include "df/ui_look_list.h"
+#include "df/unit.h"
+#include "df/unit_relationship_type.h"
+#include "df/world.h"
 
 using namespace df::enums;
 using df::global::ui;
@@ -126,7 +139,7 @@ void buildings_onUpdate(color_ostream &out)
 {
     buildings_do_onupdate = false;
 
-    df::job_list_link *link = world->job_list.next;
+    df::job_list_link *link = world->jobs.list.next;
     for (; link; link = link->next) {
         df::job *job = link->item;
 
@@ -219,7 +232,7 @@ bool Buildings::setOwner(df::building *bld, df::unit *unit)
         auto &blist = bld->owner->owned_buildings;
         vector_erase_at(blist, linear_index(blist, bld));
 
-        if (auto spouse = df::unit::find(bld->owner->relations.spouse_id))
+        if (auto spouse = df::unit::find(bld->owner->relationship_ids[df::unit_relationship_type::Spouse]))
         {
             auto &blist = spouse->owned_buildings;
             vector_erase_at(blist, linear_index(blist, bld));
@@ -230,14 +243,19 @@ bool Buildings::setOwner(df::building *bld, df::unit *unit)
 
     if (unit)
     {
+        bld->owner_id = unit->id;
         unit->owned_buildings.push_back(bld);
 
-        if (auto spouse = df::unit::find(unit->relations.spouse_id))
+        if (auto spouse = df::unit::find(unit->relationship_ids[df::unit_relationship_type::Spouse]))
         {
             auto &blist = spouse->owned_buildings;
             if (bld->canUseSpouseRoom() && linear_index(blist, bld) < 0)
                 blist.push_back(bld);
         }
+    }
+    else
+    {
+        bld->owner_id = -1;
     }
 
     return true;
@@ -345,30 +363,62 @@ df::building *Buildings::allocInstance(df::coord pos, df::building_type type, in
     switch (type)
     {
     case building_type::Well:
-        {
-            auto obj = (df::building_wellst*)bld;
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_wellst, bld))
             obj->bucket_z = bld->z;
-            break;
-        }
+        break;
+    }
     case building_type::Furnace:
-        {
-            auto obj = (df::building_furnacest*)bld;
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_furnacest, bld))
             obj->melt_remainder.resize(df::inorganic_raw::get_vector().size(), 0);
-            break;
-        }
+        break;
+    }
     case building_type::Coffin:
-        {
-            auto obj = (df::building_coffinst*)bld;
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_coffinst, bld))
             obj->initBurialFlags(); // DF has this copy&pasted
-            break;
-        }
+        break;
+    }
     case building_type::Trap:
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_trapst, bld))
         {
-            auto obj = (df::building_trapst*)bld;
             if (obj->trap_type == trap_type::PressurePlate)
                 obj->ready_timeout = 500;
-            break;
         }
+        break;
+    }
+    case building_type::Floodgate:
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_floodgatest, bld))
+            obj->gate_flags.bits.closed = true;
+        break;
+    }
+    case building_type::GrateWall:
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_grate_wallst, bld))
+            obj->gate_flags.bits.closed = true;
+        break;
+    }
+    case building_type::GrateFloor:
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_grate_floorst, bld))
+            obj->gate_flags.bits.closed = true;
+        break;
+    }
+    case building_type::BarsVertical:
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_bars_verticalst, bld))
+            obj->gate_flags.bits.closed = true;
+        break;
+    }
+    case building_type::BarsFloor:
+    {
+        if (VIRTUAL_CAST_VAR(obj, df::building_bars_floorst, bld))
+            obj->gate_flags.bits.closed = true;
+        break;
+    }
     default:
         break;
     }
@@ -887,6 +937,21 @@ static int getMaxStockpileId()
     return max_id;
 }
 
+static int getMaxCivzoneId()
+{
+    auto &vec = world->buildings.other[buildings_other_id::ANY_ZONE];
+    int max_id = 0;
+
+    for (size_t i = 0; i < vec.size(); i++)
+    {
+        auto bld = strict_virtual_cast<df::building_civzonest>(vec[i]);
+        if (bld)
+            max_id = std::max(max_id, bld->zone_num);
+    }
+
+    return max_id;
+}
+
 bool Buildings::constructAbstract(df::building *bld)
 {
     CHECK_NULL_POINTER(bld);
@@ -901,6 +966,11 @@ bool Buildings::constructAbstract(df::building *bld)
         case building_type::Stockpile:
             if (auto stock = strict_virtual_cast<df::building_stockpilest>(bld))
                 stock->stockpile_number = getMaxStockpileId() + 1;
+            break;
+
+        case building_type::Civzone:
+            if (auto zone = strict_virtual_cast<df::building_civzonest>(bld))
+                zone->zone_num = getMaxCivzoneId() + 1;
             break;
 
         default:
@@ -1105,6 +1175,19 @@ bool Buildings::deconstruct(df::building *bld)
     return true;
 }
 
+bool Buildings::markedForRemoval(df::building *bld)
+{
+    CHECK_NULL_POINTER(bld);
+    for (df::job *job : bld->jobs)
+    {
+        if (job && job->job_type == df::job_type::DestroyBuilding)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 static unordered_map<int32_t, df::coord> corner1;
 static unordered_map<int32_t, df::coord> corner2;
 
@@ -1116,7 +1199,7 @@ void Buildings::clearBuildings(color_ostream& out) {
 
 void Buildings::updateBuildings(color_ostream& out, void* ptr)
 {
-    int32_t id = (int32_t)ptr;
+    int32_t id = *((int32_t*)ptr);
     auto building = df::building::find(id);
 
     if (building)
@@ -1164,6 +1247,70 @@ void Buildings::updateBuildings(color_ostream& out, void* ptr)
     }
 }
 
+static std::map<df::building_type, std::vector<std::string>> room_quality_names = {
+    {df::building_type::Bed, {
+        "Meager Quarters",
+        "Modest Quarters",
+        "Quarters",
+        "Decent Quarters",
+        "Fine Quarters",
+        "Great Bedroom",
+        "Grand Bedroom",
+        "Royal Bedroom"}},
+    {df::building_type::Table, {
+        "Meager Dining Room",
+        "Modest Dining Room",
+        "Dining Room",
+        "Decent Dining Room",
+        "Fine Dining Room",
+        "Great Dining Room",
+        "Grand Dining Room",
+        "Royal Dining Room"}},
+    {df::building_type::Chair, {
+        "Meager Office",
+        "Modest Office",
+        "Office",
+        "Decent Office",
+        "Splendid Office",
+        "Throne Room",
+        "Opulent Throne Room",
+        "Royal Throne Room"}},
+    {df::building_type::Coffin, {
+        "Grave",
+        "Servant's Burial Chamber",
+        "Burial Chamber",
+        "Tomb",
+        "Fine Tomb",
+        "Mausoleum",
+        "Grand Mausoleum",
+        "Royal Mausoleum"}}
+};
+
+std::string Buildings::getRoomDescription(df::building *building, df::unit *unit)
+{
+    CHECK_NULL_POINTER(building);
+    // unit can be null
+
+    if (!building->is_room)
+        return "";
+
+    auto btype = building->getType();
+    if (room_quality_names.find(btype) == room_quality_names.end())
+        return "";
+
+    int32_t value = building->getRoomValue(unit);
+    auto level = ENUM_FIRST_ITEM(dfhack_room_quality_level);
+    for (auto i_level = level; is_valid_enum_item(i_level); i_level = next_enum_item(i_level, false))
+    {
+        if (value >= ENUM_ATTR(dfhack_room_quality_level, min_value, i_level))
+        {
+            level = i_level;
+        }
+    }
+
+    return vector_get(room_quality_names[btype], size_t(level), string(""));
+}
+
 void Buildings::getStockpileContents(df::building_stockpilest *stockpile, std::vector<df::item*> *items)
 {
     CHECK_NULL_POINTER(stockpile);
@@ -1206,6 +1353,20 @@ bool Buildings::isActive(df::building * building)
     return ((df::building_civzonest*) building)->zone_flags.bits.active != 0;
 }
 
+bool Buildings::isHospital(df::building * building)
+ {
+     if (!isActivityZone(building))
+         return false;
+     return ((df::building_civzonest*) building)->zone_flags.bits.hospital != 0;
+ }
+
+ bool Buildings::isAnimalTraining(df::building * building)
+ {
+     if (!isActivityZone(building))
+         return false;
+     return ((df::building_civzonest*) building)->zone_flags.bits.animal_training != 0;
+ }
+
 // returns building of pen/pit at cursor position (NULL if nothing found)
 df::building* Buildings::findPenPitAt(df::coord coord)
 {
@@ -1217,4 +1378,82 @@ df::building* Buildings::findPenPitAt(df::coord coord)
             return (*zone);
     }
     return NULL;
+}
+
+using Buildings::StockpileIterator;
+StockpileIterator& StockpileIterator::operator++() {
+    while (stockpile) {
+        if (block) {
+            // Check the next item in the current block.
+            ++current;
+        } else {
+            // Start with the top-left block covering the stockpile.
+            block = Maps::getTileBlock(stockpile->x1, stockpile->y1, stockpile->z);
+            current = 0;
+        }
+
+        while (current >= block->items.size()) {
+            // Out of items in this block; find the next block to search.
+            if (block->map_pos.x + 16 < stockpile->x2) {
+                block = Maps::getTileBlock(block->map_pos.x + 16, block->map_pos.y, stockpile->z);
+                current = 0;
+            } else if (block->map_pos.y + 16 < stockpile->y2) {
+                block = Maps::getTileBlock(stockpile->x1, block->map_pos.y + 16, stockpile->z);
+                current = 0;
+            } else {
+                // All items in all blocks have been checked.
+                block = NULL;
+                item = NULL;
+                return *this;
+            }
+        }
+
+        // If the current item isn't properly stored, move on to the next.
+        item = df::item::find(block->items[current]);
+        if (!item->flags.bits.on_ground) {
+            continue;
+        }
+
+        if (!Buildings::containsTile(stockpile, item->pos, false)) {
+            continue;
+        }
+
+        // Ignore empty bins, barrels, and wheelbarrows assigned here.
+        if (item->isAssignedToThisStockpile(stockpile->id)) {
+            auto ref = Items::getGeneralRef(item, df::general_ref_type::CONTAINS_ITEM);
+            if (!ref) continue;
+        }
+
+        // Found a valid item; yield it.
+        break;
+    }
+
+    return *this;
+}
+
+bool Buildings::getCageOccupants(df::building_cagest *cage, vector<df::unit*> &units)
+{
+    CHECK_NULL_POINTER(cage);
+    if (!world)
+        return false;
+    if (cage->contained_items.empty())
+        return false;
+
+    auto *cage_item = virtual_cast<df::item_cagest>(cage->contained_items[0]->item);
+    if (!cage_item)
+        return false;
+
+    units.clear();
+    for (df::general_ref *gref : cage_item->general_refs)
+    {
+        auto ref = virtual_cast<df::general_ref_contains_unitst>(gref);
+        if (ref)
+        {
+            df::unit *unit = df::unit::find(ref->unit_id);
+            if (unit)
+                units.push_back(unit);
+        }
+    }
+
+    return true;
 }

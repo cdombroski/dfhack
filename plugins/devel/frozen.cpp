@@ -1,10 +1,14 @@
 #include "Core.h"
 #include "Console.h"
+#include "DataDefs.h"
 #include "Export.h"
 #include "PluginManager.h"
 
-#include "DataDefs.h"
 #include "modules/Maps.h"
+
+#include "df/block_square_event_frozen_liquidst.h"
+#include "df/map_block.h"
+#include "df/world.h"
 
 using std::vector;
 using std::string;
@@ -16,12 +20,10 @@ using df::global::world;
 int changeLiquid (df::tile_liquid type)
 {
     int tiles = 0;
-    for (int i = 0; i < world->map.map_blocks.size(); i++)
+    for (df::map_block *block : world->map.map_blocks)
     {
-        df::map_block *block = world->map.map_blocks[i];
-        for (size_t j = 0; j < block->block_events.size(); j++)
+        for (df::block_square_event *evt : block->block_events)
         {
-            df::block_square_event *evt = block->block_events[j];
             if (evt->getType() != block_square_event_type::frozen_liquid)
                 continue;
             df::block_square_event_frozen_liquidst *frozen = (df::block_square_event_frozen_liquidst *)evt;

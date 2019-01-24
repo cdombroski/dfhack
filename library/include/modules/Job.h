@@ -66,11 +66,31 @@ namespace DFHack
         DFHACK_EXPORT void setJobCooldown(df::building *workshop, df::unit *worker, int cooldown = 100);
         DFHACK_EXPORT bool removeWorker(df::job *job, int cooldown = 100);
 
+        // This helpful method only removes the backref from the item to the job, but it doesn't
+        // remove the item ref from the job's vector, or delete it or anything.  Think of it as a method
+        // that does all the needful to make an item ref ready to delete.
+        DFHACK_EXPORT void disconnectJobItem(df::job *job, df::job_item_ref *item);
+        // This helpful method only removes the backref from whatever the general_ref points to,
+        // it doesn't remove the general_ref from the job's vector, or delete it or anything.
+        // Think of it as a method that does all the needful to make a ref ready to delete.
+        // If it returns false, you've found a ref that the method doesn't know how to handle.  Congratulations!
+        // You should report that and/or check in a fix.
+        DFHACK_EXPORT bool disconnectJobGeneralRef(df::job *job, df::general_ref *ref);
+        // Delete a job & remove all refs from everywhere.
+        // This method DELETES the job object!  Everything related to it will be wiped
+        // clean from the earth, so make sure you pull what you need out before calling this!
+        DFHACK_EXPORT bool removeJob(df::job *job);
+
         // Instruct the game to check and assign workers
         DFHACK_EXPORT void checkBuildingsNow();
         DFHACK_EXPORT void checkDesignationsNow();
 
         DFHACK_EXPORT bool linkIntoWorld(df::job *job, bool new_id = true);
+
+        // Flag this job's posting as "dead" and set its posting_index to -1
+        // If remove_all is true, flag all postings pointing to this job
+        // Returns true if any postings were removed
+        DFHACK_EXPORT bool removePostings(df::job *job, bool remove_all = false);
 
         // lists jobs with ids >= *id_var, and sets *id_var = *job_next_id;
         DFHACK_EXPORT bool listNewlyCreated(std::vector<df::job*> *pvec, int *id_var);

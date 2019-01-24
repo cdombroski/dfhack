@@ -1,6 +1,7 @@
-// automatically chop trees 
+// automatically chop trees
 
 #include "uicommon.h"
+#include "listcolumn.h"
 
 #include "Core.h"
 #include "Console.h"
@@ -9,24 +10,27 @@
 #include "DataDefs.h"
 #include "TileTypes.h"
 
-#include "df/world.h"
-#include "df/map_block.h"
-#include "df/tile_dig_designation.h"
-#include "df/plant_raw.h"
-#include "df/plant.h"
-#include "df/ui.h"
 #include "df/burrow.h"
-#include "df/item_flags.h"
 #include "df/item.h"
+#include "df/item_flags.h"
 #include "df/items_other_id.h"
+#include "df/job.h"
+#include "df/map_block.h"
+#include "df/material.h"
+#include "df/plant.h"
+#include "df/plant_raw.h"
+#include "df/tile_dig_designation.h"
+#include "df/ui.h"
 #include "df/viewscreen_dwarfmodest.h"
+#include "df/world.h"
 
-#include "modules/Screen.h"
-#include "modules/Maps.h"
 #include "modules/Burrows.h"
-#include "modules/World.h"
-#include "modules/MapCache.h"
+#include "modules/Designations.h"
 #include "modules/Gui.h"
+#include "modules/MapCache.h"
+#include "modules/Maps.h"
+#include "modules/Screen.h"
+#include "modules/World.h"
 
 #include <set>
 
@@ -43,7 +47,28 @@ REQUIRE_GLOBAL(ui);
 
 static bool autochop_enabled = false;
 static int min_logs, max_logs;
+static const int LOG_CAP_MAX = 99999;
 static bool wait_for_threshold;
+struct Skip {
+    bool fruit_trees;
+    bool food_trees;
+    bool cook_trees;
+    operator int() {
+        return (fruit_trees ? 1 : 0) |
+                (food_trees ? 2 : 0) |
+                (cook_trees ? 4 : 0);
+    }
+    Skip &operator= (int in) {
+        // set all fields to false if they haven't been set in this save yet
+        if (in < 0)
+            in = 0;
+        fruit_trees = (in & 1);
+        food_trees = (in & 2);
+        cook_trees = (in & 4);
+        return *this;
+    }
+};
+static Skip skip;
 
 static PersistentDataItem config_autochop;
 
@@ -156,6 +181,18 @@ private:
 
 static WatchedBurrows watchedBurrows;
 
+static int string_to_int(string s, int default_ = 0)
+{
+    try
+    {
+        return std::stoi(s);
+    }
+    catch (std::exception&)
+    {
+        return default_;
+    }
+}
+
 static void save_config()
 {
     config_autochop.val() = watchedBurrows.getSerialisedIds();
@@ -163,6 +200,7 @@ static void save_config()
     config_autochop.ival(1) = min_logs;
     config_autochop.ival(2) = max_logs;
     config_autochop.ival(3) = wait_for_threshold;
+    config_autochop.ival(4) = skip;
 }
 
 static void initialize()
@@ -172,6 +210,7 @@ static void initialize()
     min_logs = 80;
     max_logs = 100;
     wait_for_threshold = false;
+    skip = 0;
 
     config_autochop = World::GetPersistentData("autochop/config");
     if (config_autochop.isValid())
@@ -181,6 +220,7 @@ static void initialize()
         min_logs = config_autochop.ival(1);
         max_logs = config_autochop.ival(2);
         wait_for_threshold = config_autochop.ival(3);
+        skip = config_autochop.ival(4);
     }
     else
     {
@@ -190,61 +230,114 @@ static void initialize()
     }
 }
 
-static int do_chop_designation(bool chop, bool count_only)
+static bool skip_plant(const df::plant * plant, bool *restricted)
+{
+    if (restricted)
+        *restricted = false;
+
+    // Skip all non-trees immediately.
+    if (plant->flags.bits.is_shrub)
+        return true;
+
+    // Skip plants with invalid tile.
+    df::map_block *cur = Maps::getTileBlock(plant->pos);
+    if (!cur)
+        return true;
+
+    int x = plant->pos.x % 16;
+    int y = plant->pos.y % 16;
+
+    // Skip all unrevealed plants.
+    if (cur->designation[x][y].bits.hidden)
+        return true;
+
+    df::tiletype_material material = tileMaterial(cur->tiletype[x][y]);
+    if (material != tiletype_material::TREE)
+        return true;
+
+    const df::plant_raw *plant_raw = df::plant_raw::find(plant->material);
+
+    // Skip fruit trees if set.
+    if (skip.fruit_trees && plant_raw->material_defs.type_drink != -1)
+    {
+        if (restricted)
+            *restricted = true;
+        return true;
+    }
+
+    if (skip.food_trees || skip.cook_trees)
+    {
+        for (df::material * mat : plant_raw->material)
+        {
+            if (skip.food_trees && mat->flags.is_set(material_flags::EDIBLE_RAW))
+            {
+                if (restricted)
+                    *restricted = true;
+                return true;
+            }
+
+            if (skip.cook_trees && mat->flags.is_set(material_flags::EDIBLE_COOKED))
+            {
+                if (restricted)
+                    *restricted = true;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static int do_chop_designation(bool chop, bool count_only, int *skipped = nullptr)
 {
     int count = 0;
+    if (skipped)
+    {
+        *skipped = 0;
+    }
     for (size_t i = 0; i < world->plants.all.size(); i++)
     {
         const df::plant *plant = world->plants.all[i];
-        df::map_block *cur = Maps::getTileBlock(plant->pos);
-        if (!cur)
-            continue;
-        int x = plant->pos.x % 16;
-        int y = plant->pos.y % 16;
 
-        if (plant->flags.bits.is_shrub)
+        bool restricted = false;
+        if (skip_plant(plant, &restricted))
+        {
+            if (restricted && skipped)
+            {
+                ++*skipped;
+            }
             continue;
-        if (cur->designation[x][y].bits.hidden)
-            continue;
-
-        df::tiletype_material material = tileMaterial(cur->tiletype[x][y]);
-        if (material != tiletype_material::TREE)
-            continue;
+        }
 
         if (!count_only && !watchedBurrows.isValidPos(plant->pos))
             continue;
 
-        bool dirty = false;
-        if (chop && cur->designation[x][y].bits.dig == tile_dig_designation::No)
+        if (chop && !Designations::isPlantMarked(plant))
         {
             if (count_only)
             {
-                ++count;
+                if (Designations::canMarkPlant(plant))
+                    count++;
             }
             else
             {
-                cur->designation[x][y].bits.dig = tile_dig_designation::Default;
-                dirty = true;
+                if (Designations::markPlant(plant))
+                    count++;
             }
         }
 
-        if (!chop && cur->designation[x][y].bits.dig == tile_dig_designation::Default)
+        if (!chop && Designations::isPlantMarked(plant))
         {
             if (count_only)
             {
-                ++count;
+                if (Designations::canUnmarkPlant(plant))
+                    count++;
             }
             else
             {
-                cur->designation[x][y].bits.dig = tile_dig_designation::No;
-                dirty = true;
+                if (Designations::unmarkPlant(plant))
+                    count++;
             }
-        }
-
-        if (dirty)
-        {
-            cur->flags.bits.designated = true;
-            ++count;
         }
     }
 
@@ -356,8 +449,13 @@ static void do_autochop()
 class ViewscreenAutochop : public dfhack_viewscreen
 {
 public:
-    ViewscreenAutochop()
+    ViewscreenAutochop():
+        selected_column(0),
+        current_log_count(0),
+        marked_tree_count(0),
+        skipped_tree_count(0)
     {
+        edit_mode = EDIT_NONE;
         burrows_column.multiselect = true;
         burrows_column.setTitle("Burrows");
         burrows_column.bottom_margin = 3;
@@ -375,10 +473,12 @@ public:
         auto last_selected_index = burrows_column.highlighted_index;
         burrows_column.clear();
 
-        for (auto iter = ui->burrows.list.begin(); iter != ui->burrows.list.end(); iter++)
+        for (df::burrow *burrow : ui->burrows.list)
         {
-            df::burrow* burrow = *iter;
-            auto elem = ListEntry<df::burrow *>(burrow->name, burrow);
+            string name = burrow->name;
+            if (name.empty())
+                name = "Burrow " + int_to_string(burrow->id + 1);
+            auto elem = ListEntry<df::burrow *>(name, burrow);
             elem.selected = watchedBurrows.isBurrowWatched(burrow);
             burrows_column.add(elem);
         }
@@ -387,7 +487,7 @@ public:
         burrows_column.filterDisplay();
 
         current_log_count = get_log_count();
-        marked_tree_count = do_chop_designation(false, true);
+        marked_tree_count = do_chop_designation(false, true, &skipped_tree_count);
     }
 
     void change_min_logs(int delta)
@@ -414,6 +514,46 @@ public:
 
     void feed(set<df::interface_key> *input)
     {
+        if (edit_mode != EDIT_NONE)
+        {
+            string entry = int_to_string(edit_mode == EDIT_MIN ? min_logs : max_logs);
+            if (input->count(interface_key::LEAVESCREEN) || input->count(interface_key::SELECT))
+            {
+                if (edit_mode == EDIT_MIN)
+                    max_logs = std::max(min_logs, max_logs);
+                else if (edit_mode == EDIT_MAX)
+                    min_logs = std::min(min_logs, max_logs);
+                edit_mode = EDIT_NONE;
+            }
+            else if (input->count(interface_key::STRING_A000))
+            {
+                if (!entry.empty())
+                    entry.erase(entry.size() - 1);
+            }
+            else if (entry.size() < 5)
+            {
+                for (auto k = input->begin(); k != input->end(); ++k)
+                {
+                    char ch = char(Screen::keyToChar(*k));
+                    if (ch >= '0' && ch <= '9')
+                        entry += ch;
+                }
+            }
+
+            switch (edit_mode)
+            {
+            case EDIT_MIN:
+                min_logs = string_to_int(entry);
+                break;
+            case EDIT_MAX:
+                max_logs = string_to_int(entry);
+                break;
+            default: break;
+            }
+
+            return;
+        }
+
         bool key_processed = false;
         message.clear();
         switch (selected_column)
@@ -447,13 +587,34 @@ public:
         {
             int count = do_chop_designation(true, false);
             message = "Trees marked for chop: " + int_to_string(count);
-            marked_tree_count = do_chop_designation(false, true);
+            marked_tree_count = do_chop_designation(false, true, &skipped_tree_count);
+            if (skipped_tree_count)
+            {
+                message += ", skipped: " + int_to_string(skipped_tree_count);
+            }
         }
         else if  (input->count(interface_key::CUSTOM_U))
         {
             int count = do_chop_designation(false, false);
             message = "Trees unmarked: " + int_to_string(count);
-            marked_tree_count = do_chop_designation(false, true);
+            marked_tree_count = do_chop_designation(false, true, &skipped_tree_count);
+            if (skipped_tree_count)
+            {
+                message += ", skipped: " + int_to_string(skipped_tree_count);
+            }
+        }
+        else if  (input->count(interface_key::CUSTOM_N))
+        {
+            edit_mode = EDIT_MIN;
+        }
+        else if  (input->count(interface_key::CUSTOM_M))
+        {
+            edit_mode = EDIT_MAX;
+        }
+        else if  (input->count(interface_key::CUSTOM_SHIFT_N))
+        {
+            min_logs = LOG_CAP_MAX + 1;
+            max_logs = LOG_CAP_MAX + 1;
         }
         else if  (input->count(interface_key::CUSTOM_H))
         {
@@ -486,6 +647,18 @@ public:
         else if  (input->count(interface_key::CUSTOM_SHIFT_L))
         {
             change_max_logs(10);
+        }
+        else if  (input->count(interface_key::CUSTOM_F))
+        {
+            skip.fruit_trees = !skip.fruit_trees;
+        }
+        else if  (input->count(interface_key::CUSTOM_E))
+        {
+            skip.food_trees = !skip.food_trees;
+        }
+        else if  (input->count(interface_key::CUSTOM_C))
+        {
+            skip.cook_trees = !skip.cook_trees;
         }
         else if (enabler->tracking_on && enabler->mouse_lbut)
         {
@@ -522,6 +695,7 @@ public:
         if (burrows_column.getSelectedElems().size() > 0)
         {
             OutputString(COLOR_GREEN, x, y, "Will chop in selected burrows", true, left_margin);
+            ++y;
         }
         else
         {
@@ -530,14 +704,48 @@ public:
         }
 
         ++y;
-        OutputToggleString(x, y, "Autochop", "a", autochop_enabled, true, left_margin);
-        OutputHotkeyString(x, y, "Designate Now", "d", true, left_margin);
-        OutputHotkeyString(x, y, "Undesignate Now", "u", true, left_margin);
+
+        using namespace df::enums::interface_key;
+        OutputToggleString(x, y, "Autochop", CUSTOM_A, autochop_enabled, true, left_margin);
+        OutputHotkeyString(x, y, "Designate Now", CUSTOM_D, true, left_margin);
+        OutputHotkeyString(x, y, "Undesignate Now", CUSTOM_U, true, left_margin);
         OutputHotkeyString(x, y, "Toggle Burrow", "Enter", true, left_margin);
         if (autochop_enabled)
         {
-            OutputLabelString(x, y, "Min Logs", "hjHJ", int_to_string(min_logs), true, left_margin);
-            OutputLabelString(x, y, "Max Logs", "klKL", int_to_string(max_logs), true, left_margin);
+            const struct {
+                const char *caption;
+                int count;
+                bool in_edit;
+                df::interface_key key;
+                df::interface_key skeys[4];
+            } rows[] = {
+                {"Min Logs: ", min_logs, edit_mode == EDIT_MIN, CUSTOM_N, {CUSTOM_H, CUSTOM_J, CUSTOM_SHIFT_H, CUSTOM_SHIFT_J}},
+                {"Max Logs: ", max_logs, edit_mode == EDIT_MAX, CUSTOM_M, {CUSTOM_K, CUSTOM_L, CUSTOM_SHIFT_K, CUSTOM_SHIFT_L}}
+            };
+            for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i)
+            {
+                auto row = rows[i];
+                OutputHotkeyString(x, y, row.caption, row.key);
+                auto prev_x = x;
+                if (row.in_edit)
+                    OutputString(COLOR_LIGHTCYAN, x, y, int_to_string(row.count) + "_");
+                else if (row.count <= LOG_CAP_MAX)
+                    OutputString(COLOR_LIGHTGREEN, x, y, int_to_string(row.count));
+                else
+                    OutputString(COLOR_LIGHTBLUE, x, y, "Unlimited");
+                if (edit_mode == EDIT_NONE)
+                {
+                    x = std::max(x, prev_x + 10);
+                    for (size_t j = 0; j < sizeof(row.skeys) / sizeof(row.skeys[0]); ++j)
+                        OutputString(COLOR_LIGHTGREEN, x, y, DFHack::Screen::getKeyDisplay(row.skeys[j]));
+                    OutputString(COLOR_WHITE, x, y, ": Step");
+                }
+                OutputString(COLOR_WHITE, x, y, "", true, left_margin);
+            }
+            OutputHotkeyString(x, y, "No limit", CUSTOM_SHIFT_N, true, left_margin);
+            OutputToggleString(x, y, "Skip Fruit Trees", CUSTOM_F, skip.fruit_trees, true, left_margin);
+            OutputToggleString(x, y, "Skip Edible Product Trees", CUSTOM_E, skip.food_trees, true, left_margin);
+            OutputToggleString(x, y, "Skip Cookable Product Trees", CUSTOM_C, skip.cook_trees, true, left_margin);
         }
 
         ++y;
@@ -549,7 +757,7 @@ public:
     }
 
     std::string getFocusString() { return "autochop"; }
-    
+
     void updateAutochopBurrows()
     {
         watchedBurrows.clear();
@@ -562,8 +770,10 @@ private:
     int selected_column;
     int current_log_count;
     int marked_tree_count;
+    int skipped_tree_count;
     MapExtras::MapCache mcache;
     string message;
+    enum { EDIT_NONE, EDIT_MIN, EDIT_MAX } edit_mode;
 
     void validateColumn()
     {
@@ -586,7 +796,7 @@ struct autochop_hook : public df::viewscreen_dwarfmodest
         using namespace df::enums::ui_sidebar_mode;
         return (ui->main.mode == DesignateChopTrees);
     }
-    
+
     void sendKey(const df::interface_key &key)
     {
         set<df::interface_key> tmp;
@@ -599,7 +809,7 @@ struct autochop_hook : public df::viewscreen_dwarfmodest
         if (isInDesignationMenu() && input->count(interface_key::CUSTOM_C))
         {
             sendKey(interface_key::LEAVESCREEN);
-            Screen::show(new ViewscreenAutochop());
+            Screen::show(dts::make_unique<ViewscreenAutochop>(), plugin_self);
         }
         else
         {
@@ -642,7 +852,7 @@ command_result df_autochop (color_ostream &out, vector <string> & parameters)
             return CR_WRONG_USAGE;
     }
     if (Maps::IsValid())
-        Screen::show(new ViewscreenAutochop());
+        Screen::show(dts::make_unique<ViewscreenAutochop>(), plugin_self);
     return CR_OK;
 }
 
@@ -654,15 +864,11 @@ DFhackCExport command_result plugin_onupdate (color_ostream &out)
     if(!Maps::IsValid())
         return CR_OK;
 
-    static decltype(world->frame_counter) last_frame_count = 0;
-
     if (DFHack::World::ReadPauseState())
         return CR_OK;
 
-    if (world->frame_counter - last_frame_count < 1200) // Check every day
+    if (world->frame_counter % 1200 != 0) // Check every day
         return CR_OK;
-
-    last_frame_count = world->frame_counter;
 
     do_autochop();
 
@@ -692,7 +898,7 @@ DFhackCExport command_result plugin_enable(color_ostream &out, bool enable)
 DFhackCExport command_result plugin_init ( color_ostream &out, vector <PluginCommand> &commands)
 {
     commands.push_back(PluginCommand(
-        "autochop", "Allows automatic harvesting of trees based on the number of stockpiled logs",
+        "autochop", "Auto-harvest trees when low on stockpiled logs",
         df_autochop, false,
         "Opens the automated chopping control screen. Specify 'debug' to forcibly save settings.\n"
     ));

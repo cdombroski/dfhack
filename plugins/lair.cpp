@@ -10,6 +10,9 @@
 #include "modules/World.h"
 #include "modules/MapCache.h"
 #include "modules/Gui.h"
+
+#include "df/world.h"
+
 using namespace DFHack;
 using namespace df::enums;
 
@@ -58,7 +61,7 @@ command_result lair(color_ostream &out, std::vector<std::string> & params)
 
 DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <PluginCommand> &commands)
 {
-    commands.push_back(PluginCommand("lair","Mark the map as a monster lair, preventing item scatter.",lair, false,
+    commands.push_back(PluginCommand("lair","Mark the map as a monster lair (avoids item scatter)",lair, false,
         "Usage: 'lair' to mark entire map as monster lair, 'lair reset' to undo the operation.\n"));
     return CR_OK;
 }

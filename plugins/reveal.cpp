@@ -10,8 +10,11 @@
 #include "modules/World.h"
 #include "modules/MapCache.h"
 #include "modules/Gui.h"
-#include "df/construction.h"
+
 #include "df/block_square_event_frozen_liquidst.h"
+#include "df/construction.h"
+#include "df/world.h"
+
 using MapExtras::MapCache;
 
 using std::string;
@@ -41,7 +44,7 @@ bool isSafe(df::coord c)
     if (local_feature.type == feature_type::deep_special_tube || local_feature.type == feature_type::deep_surface_portal)
         return false;
     // And Hell *is* Hell.
-    if (global_feature.type == feature_type::feature_underworld_from_layer)
+    if (global_feature.type == feature_type::underworld_from_layer)
         return false;
     // otherwise it's safe.
     return true;
@@ -77,7 +80,7 @@ command_result nopause(color_ostream &out, vector<string> & params);
 
 DFhackCExport command_result plugin_init ( color_ostream &out, vector <PluginCommand> &commands)
 {
-    commands.push_back(PluginCommand("reveal","Reveal the map. 'reveal hell' will also reveal hell. 'reveal demon' won't pause.",reveal,false,
+    commands.push_back(PluginCommand("reveal","Reveal the map.",reveal,false,
         "Reveals the map, by default ignoring hell.\n"
         "Options:\n"
         "hell     - also reveal hell, while forcing the game to pause.\n"
@@ -86,12 +89,12 @@ DFhackCExport command_result plugin_init ( color_ostream &out, vector <PluginCom
         "Reverts the previous reveal operation, hiding the map again.\n"));
     commands.push_back(PluginCommand("revtoggle","Reveal/unreveal depending on state.",revtoggle,false,
         "Toggles between reveal and unreveal.\n"));
-    commands.push_back(PluginCommand("revflood","Hide all, reveal all tiles reachable from cursor position.",revflood,false,
+    commands.push_back(PluginCommand("revflood","Hide all, and reveal tiles reachable from the cursor.",revflood,false,
         "This command hides the whole map. Then, starting from the cursor,\n"
         "reveals all accessible tiles. Allows repairing parma-revealed maps.\n"));
-    commands.push_back(PluginCommand("revforget", "Forget the current reveal data, allowing to use reveal again.",revforget,false,
+    commands.push_back(PluginCommand("revforget", "Forget the current reveal data.",revforget,false,
         "Forget the current reveal data, allowing to use reveal again.\n"));
-    commands.push_back(PluginCommand("nopause","Disable pausing (doesn't affect pause forced by reveal).",nopause,false,
+    commands.push_back(PluginCommand("nopause","Disable manual and automatic pausing.",nopause,false,
         "Disable pausing (doesn't affect pause forced by reveal).\n"
         "Activate with 'nopause 1', deactivate with 'nopause 0'.\n"));
     return CR_OK;
@@ -346,7 +349,7 @@ command_result revflood(color_ostream &out, vector<string> & params)
     }
     t_gamemodes gm;
     World::ReadGameMode(gm);
-    if(gm.g_type != game_type::DWARF_MAIN && gm.g_mode != game_mode::DWARF )
+    if(!World::isFortressMode(gm.g_type) || gm.g_mode != game_mode::DWARF )
     {
         out.printerr("Only in proper dwarf mode.\n");
         return CR_FAILURE;
@@ -398,25 +401,43 @@ command_result revflood(color_ostream &out, vector<string> & params)
 
         if(!MCache->testCoord(current))
             continue;
-        df::tiletype tt = MCache->baseTiletypeAt(current);
         df::tile_designation des = MCache->designationAt(current);
         if(!des.bits.hidden)
         {
             continue;
         }
-        bool below = 0;
-        bool above = 0;
-        bool sides = 0;
-        bool unhide = 1;
-        // by tile shape, determine behavior and action
+
+        // we don't want constructions or ice to restrict vision (to avoid bug #1871)
+        // so use the base tile beneath it
+        df::tiletype tt = MCache->baseTiletypeAt(current);
+
+        // UNLESS the actual tile has more visibility than the base
+        // i.e. if it's a downward or up/down stairway
+        df::tiletype ctt = MCache->tiletypeAt(current);
+        switch (tileShape(ctt))
+        {
+        case tiletype_shape::STAIR_UPDOWN:
+        case tiletype_shape::STAIR_DOWN:
+            tt = ctt;
+            break;
+        default:
+            break;
+        }
+
+        bool below = false;
+        bool above = false;
+        bool sides = false;
+        bool unhide = true;
+        // By tile shape, determine behavior and action
         switch (tileShape(tt))
         {
-        // walls:
+        // Walls
         case tiletype_shape::WALL:
-            if(from_below)
-                unhide = 0;
+            if (from_below)
+                unhide = false;
             break;
-        // air/free space
+        // Open space
+        case tiletype_shape::NONE:
         case tiletype_shape::EMPTY:
         case tiletype_shape::RAMP_TOP:
         case tiletype_shape::STAIR_UPDOWN:
@@ -424,7 +445,7 @@ command_result revflood(color_ostream &out, vector<string> & params)
         case tiletype_shape::BROOK_TOP:
             above = below = sides = true;
             break;
-        // has floor
+        // Floors
         case tiletype_shape::FORTIFICATION:
         case tiletype_shape::STAIR_UP:
         case tiletype_shape::RAMP:
@@ -438,40 +459,44 @@ command_result revflood(color_ostream &out, vector<string> & params)
         case tiletype_shape::PEBBLES:
         case tiletype_shape::BROOK_BED:
         case tiletype_shape::ENDLESS_PIT:
-            if(from_below)
-                unhide = 0;
-            above = sides = true;
+            if (from_below)
+                unhide = false;
+            else
+                above = sides = true;
             break;
         }
+        // Special case for trees - always reveal them as if they were floor tiles
         if (tileMaterial(tt) == tiletype_material::PLANT || tileMaterial(tt) == tiletype_material::MUSHROOM)
         {
-            if(from_below)
-                unhide = 0;
-            above = sides = true;
+            if (from_below)
+                unhide = false;
+            else
+                above = sides = true;
         }
-        if(unhide)
+        if (unhide)
         {
             des.bits.hidden = false;
-            MCache->setDesignationAt(current,des);
+            MCache->setDesignationAt(current, des);
         }
-        if(sides)
+        if (sides)
         {
-            flood.push(foo(DFCoord(current.x + 1, current.y ,current.z),false));
-            flood.push(foo(DFCoord(current.x + 1, current.y + 1 ,current.z),false));
-            flood.push(foo(DFCoord(current.x, current.y + 1 ,current.z),false));
-            flood.push(foo(DFCoord(current.x - 1, current.y + 1 ,current.z),false));
-            flood.push(foo(DFCoord(current.x - 1, current.y ,current.z),false));
-            flood.push(foo(DFCoord(current.x - 1, current.y - 1 ,current.z),false));
-            flood.push(foo(DFCoord(current.x, current.y - 1 ,current.z),false));
-            flood.push(foo(DFCoord(current.x + 1, current.y - 1 ,current.z),false));
+            // Scan adjacent tiles clockwise, starting toward east
+            flood.push(foo(DFCoord(current.x + 1, current.y    , current.z), false));
+            flood.push(foo(DFCoord(current.x + 1, current.y + 1, current.z), false));
+            flood.push(foo(DFCoord(current.x    , current.y + 1, current.z), false));
+            flood.push(foo(DFCoord(current.x - 1, current.y + 1, current.z), false));
+            flood.push(foo(DFCoord(current.x - 1, current.y    , current.z), false));
+            flood.push(foo(DFCoord(current.x - 1, current.y - 1, current.z), false));
+            flood.push(foo(DFCoord(current.x    , current.y - 1, current.z), false));
+            flood.push(foo(DFCoord(current.x + 1, current.y - 1, current.z), false));
         }
-        if(above)
+        if (above)
         {
-            flood.push(foo(DFCoord(current.x, current.y ,current.z + 1),true));
+            flood.push(foo(DFCoord(current.x, current.y, current.z + 1), true));
         }
-        if(below)
+        if (below)
         {
-            flood.push(foo(DFCoord(current.x, current.y ,current.z - 1),false));
+            flood.push(foo(DFCoord(current.x, current.y, current.z - 1), false));
         }
     }
     MCache->WriteAll();

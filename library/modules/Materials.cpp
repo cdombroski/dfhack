@@ -396,6 +396,11 @@ bool MaterialInfo::matches(const df::job_material_category &cat)
 
     using namespace df::enums::material_flags;
     TEST(plant, STRUCTURAL_PLANT_MAT);
+    TEST(plant, SEED_MAT);
+    TEST(plant, THREAD_PLANT);
+    TEST(plant, ALCOHOL_PLANT);
+    TEST(plant, POWDER_MISC_PLANT);
+    TEST(plant, LIQUID_MISC_PLANT);
     TEST(wood, WOOD);
     TEST(cloth, THREAD_PLANT);
     TEST(silk, SILK);
@@ -488,6 +493,7 @@ void MaterialInfo::getMatchBits(df::job_item_flags1 &ok, df::job_item_flags1 &ma
     TEST(tameable_vermin, false);
     TEST(sharpenable, MAT_FLAG(IS_STONE));
     TEST(milk, linear_index(material->reaction_product.id, std::string("CHEESE_MAT")) >= 0);
+    TEST(undisturbed, MAT_FLAG(SILK));
     //04000000 - "milkable" - vtable[107],1,1
 }
 
@@ -586,11 +592,10 @@ bool DFHack::isStoneInorganic(int material)
     return true;
 }
 
-Module* DFHack::createMaterials()
+std::unique_ptr<Module> DFHack::createMaterials()
 {
-    return new Materials();
+    return dts::make_unique<Materials>();
 }
-
 
 Materials::Materials()
 {
@@ -727,7 +732,7 @@ bool Materials::ReadOthers(void)
 
 bool Materials::ReadDescriptorColors (void)
 {
-    size_t size = world->raws.language.colors.size();
+    size_t size = world->raws.descriptors.colors.size();
 
     color.clear();
     if(size == 0)
@@ -735,7 +740,7 @@ bool Materials::ReadDescriptorColors (void)
     color.reserve(size);
     for (size_t i = 0; i < size;i++)
     {
-        df::descriptor_color *c = world->raws.language.colors[i];
+        df::descriptor_color *c = world->raws.descriptors.colors[i];
         t_descriptor_color col;
         col.id = c->id;
         col.name = c->name;
@@ -745,13 +750,13 @@ bool Materials::ReadDescriptorColors (void)
         color.push_back(col);
     }
 
-    size = world->raws.language.patterns.size();
+    size = world->raws.descriptors.patterns.size();
     alldesc.clear();
     alldesc.reserve(size);
     for (size_t i = 0; i < size;i++)
     {
         t_matgloss mat;
-        mat.id = world->raws.language.patterns[i]->id;
+        mat.id = world->raws.descriptors.patterns[i]->id;
         alldesc.push_back(mat);
     }
     return true;

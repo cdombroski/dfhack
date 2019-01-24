@@ -2,14 +2,24 @@
 module Kernel
     def puts(*a)
         a.flatten.each { |l|
-            DFHack.print_str(l.to_s.chomp + "\n")
+            # XXX looks like print_str crashes with strings longer than 4096... maybe not nullterminated ?
+            # this workaround fixes it
+            s = l.to_s.chomp + "\n"
+            while s.length > 0
+                DFHack.print_str(s[0, 4000])
+                s[0, 4000] = ''
+            end
         }
         nil
     end
 
     def puts_err(*a)
         a.flatten.each { |l|
-            DFHack.print_err(l.to_s.chomp + "\n")
+            s = l.to_s.chomp + "\n"
+            while s.length > 0
+                DFHack.print_err(s[0, 4000])
+                s[0, 4000] = ''
+            end
         }
         nil
     end
@@ -70,7 +80,7 @@ module DFHack
             @onupdate_list ||= []
             @onupdate_list << OnupdateCallback.new(descr, b, ticklimit, initialtickdelay)
             DFHack.onupdate_active = true
-            if onext = @onupdate_list.sort.first
+            if onext = @onupdate_list.min
                 DFHack.onupdate_minyear = onext.minyear
                 DFHack.onupdate_minyeartick = onext.minyeartick
             end
@@ -99,20 +109,21 @@ module DFHack
         def onupdate
             @onupdate_list ||= []
 
-            y = cur_year
+            y = yt = 0
+            y = cur_year rescue 0
             ytmax = TICKS_PER_YEAR
             if df.gamemode == :ADVENTURE and df.respond_to?(:cur_year_tick_advmode)
                 yt = cur_year_tick_advmode
                 ytmax *= 144
             else
-                yt = cur_year_tick
+                yt = cur_year_tick rescue 0
             end
 
             @onupdate_list.each { |o|
                 o.check_run(y, yt, ytmax)
             }
 
-            if onext = @onupdate_list.sort.first
+            if onext = @onupdate_list.min
                 DFHack.onupdate_minyear = onext.minyear
                 if ytmax > TICKS_PER_YEAR
                     DFHack.onupdate_minyeartick = -1

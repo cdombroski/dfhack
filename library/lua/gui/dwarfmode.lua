@@ -14,34 +14,33 @@ local world_map = df.global.world.map
 AREA_MAP_WIDTH = 23
 MENU_WIDTH = 30
 
-function getPanelLayout()
-    local sw, sh = dscreen.getWindowSize()
-    local view_height = sh-2
-    local view_rb = sw-1
-    local area_x2 = sw-AREA_MAP_WIDTH-2
-    local menu_x2 = sw-MENU_WIDTH-2
-    local menu_x1 = area_x2-MENU_WIDTH-1
-    local area_pos = df.global.ui_area_map_width
-    local menu_pos = df.global.ui_menu_width
-    local rv = {}
+refreshSidebar = dfhack.gui.refreshSidebar
 
-    if area_pos < 3 then
-        rv.area_map = gui.mkdims_xy(area_x2+1,1,view_rb-1,view_height)
-        view_rb = area_x2
+function getPanelLayout()
+    local dims = dfhack.gui.getDwarfmodeViewDims()
+    local area_pos = df.global.ui_menu_width[1]
+    local menu_pos = df.global.ui_menu_width[0]
+
+    if dims.menu_forced then
+        menu_pos = area_pos - 1
     end
-    if menu_pos < area_pos or df.global.ui.main.mode ~= 0 then
-        if menu_pos >= area_pos then
-            rv.menu_forced = true
-            menu_pos = area_pos-1
-        end
-        local menu_x = menu_x2
-        if menu_pos < 2 then menu_x = menu_x1 end
-        rv.menu = gui.mkdims_xy(menu_x+1,1,view_rb-1,view_height)
-        view_rb = menu_x
+
+    local rv = {
+        menu_pos = menu_pos,
+        area_pos = area_pos,
+        map = gui.mkdims_xy(dims.map_x1, dims.map_y1, dims.map_x2, dims.map_y2),
+    }
+
+    if dims.menu_forced then
+        rv.menu_forced = true
     end
-    rv.area_pos = area_pos
-    rv.menu_pos = menu_pos
-    rv.map = gui.mkdims_xy(1,1,view_rb-1,view_height)
+    if dims.menu_on then
+        rv.menu = gui.mkdims_xy(dims.menu_x1, dims.y1, dims.menu_x2, dims.y2)
+    end
+    if dims.area_on then
+        rv.area_map = gui.mkdims_xy(dims.area_x1, dims.y1, dims.area_x2, dims.y2)
+    end
+
     return rv
 end
 
@@ -419,14 +418,23 @@ function MenuOverlay:render(dc)
 end
 --fakes a "real" workshop sidebar menu, but on exactly selected workshop
 WorkshopOverlay = defclass(WorkshopOverlay, MenuOverlay)
+WorkshopOverlay.focus_path="WorkshopOverlay"
 WorkshopOverlay.ATTRS={
     workshop=DEFAULT_NIL,
 }
+function WorkshopOverlay:onAboutToShow(below)
+    WorkshopOverlay.super.onAboutToShow(self,below)
+
+    if df.global.world.selected_building ~= self.workshop then
+        error("The workshop overlay tried to show up for incorrect workshop")
+    end
+end
 function WorkshopOverlay:onInput(keys)
-   local allowedKeys={ --TODO add options: job management, profile, etc...
-        "CURSOR_RIGHT","CURSOR_LEFT","CURSOR_UP","CURSOR_DOWN",
-        "CURSOR_UPRIGHT","CURSOR_UPLEFT","CURSOR_DOWNRIGHT","CURSOR_DOWNLEFT",
-        "CURSOR_UP_Z","CURSOR_DOWN_Z","DESTROYBUILDING","CHANGETAB"}
+    local allowedKeys={ --TODO add options: job management, profile, etc...
+        "CURSOR_RIGHT","CURSOR_RIGHT_FAST","CURSOR_LEFT","CURSOR_LEFT_FAST","CURSOR_UP","CURSOR_UP_FAST","CURSOR_DOWN","CURSOR_DOWN_FAST",
+        "CURSOR_UPRIGHT","CURSOR_UPRIGHT_FAST","CURSOR_UPLEFT","CURSOR_UPLEFT_FAST","CURSOR_DOWNRIGHT","CURSOR_DOWNRIGHT_FAST","CURSOR_DOWNLEFT","CURSOR_DOWNLEFT_FAST",
+        "CURSOR_UP_Z","CURSOR_DOWN_Z","DESTROYBUILDING","CHANGETAB","SUSPENDBUILDING"}
+
     if keys.LEAVESCREEN then
         self:dismiss()
         self:sendInputToParent('LEAVESCREEN')
@@ -447,5 +455,27 @@ function WorkshopOverlay:onInput(keys)
         self:dismiss()
         return
     end
+end
+function WorkshopOverlay:onGetSelectedBuilding()
+    return self.workshop
+end
+local function is_slated_for_remove( bld )
+    for i,v in ipairs(bld.jobs) do
+        if v.job_type==df.job_type.DestroyBuilding then
+            return true
+        end
+    end
+    return false
+end
+function WorkshopOverlay:render(dc)
+    self:renderParent()
+    if df.global.world.selected_building ~= self.workshop then
+        return
+    end
+    if is_slated_for_remove(self.workshop) then
+        return
+    end
+
+    WorkshopOverlay.super.render(self, dc)
 end
 return _ENV

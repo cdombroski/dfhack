@@ -505,17 +505,17 @@ function prompt_yes_no(msg,default)
         prompt = prompt..' (y/n)[n]: '
     end
     while true do
-        local rv = dfhack.lineedit(prompt)
-        if rv then
-            if string.match(rv,'^[Yy]') then
-                return true
-            elseif string.match(rv,'^[Nn]') then
-                return false
-            elseif rv == 'abort' then
-                qerror('User abort')
-            elseif rv == '' and default ~= nil then
-                return default
-            end
+        local rv,err = dfhack.lineedit(prompt)
+        if not rv then
+            qerror(err);
+        elseif string.match(rv,'^[Yy]') then
+            return true
+        elseif string.match(rv,'^[Nn]') then
+            return false
+        elseif rv == 'abort' then
+            qerror('User abort')
+        elseif rv == '' and default ~= nil then
+            return default
         end
     end
 end
@@ -524,7 +524,10 @@ end
 function prompt_input(prompt,check,quit_str)
     quit_str = quit_str or '~~~'
     while true do
-        local rv = dfhack.lineedit(prompt)
+        local rv,err = dfhack.lineedit(prompt)
+        if not rv then
+            qerror(err);
+        end
         if rv == quit_str then
             qerror('User abort')
         end
@@ -611,15 +614,108 @@ function processArgs(args, validArgs)
 end
 
 function fillTable(table1,table2)
- for k,v in pairs(table2) do
-  table1[k] = v
- end
+    for k,v in pairs(table2) do
+        table1[k] = v
+    end
 end
 
 function unfillTable(table1,table2)
- for k,v in pairs(table2) do
-  table1[k] = nil
- end
+    for k,v in pairs(table2) do
+        table1[k] = nil
+    end
+end
+
+function df_shortcut_var(k)
+    if k == 'scr' or k == 'screen' then
+        return dfhack.gui.getCurViewscreen()
+    elseif k == 'bld' or k == 'building' then
+        return dfhack.gui.getSelectedBuilding()
+    elseif k == 'item' then
+        return dfhack.gui.getSelectedItem()
+    elseif k == 'job' then
+        return dfhack.gui.getSelectedJob()
+    elseif k == 'wsjob' or k == 'workshop_job' then
+        return dfhack.gui.getSelectedWorkshopJob()
+    elseif k == 'unit' then
+        return dfhack.gui.getSelectedUnit()
+    elseif k == 'plant' then
+        return dfhack.gui.getSelectedPlant()
+    else
+        for g in pairs(df.global) do
+            if g == k then
+                return df.global[k]
+            end
+        end
+
+        return _G[k]
+    end
+end
+
+function df_shortcut_env()
+    local env = {}
+    setmetatable(env, {__index = function(self, k) return df_shortcut_var(k) end})
+    return env
+end
+
+df_env = df_shortcut_env()
+
+function df_expr_to_ref(expr)
+    expr = expr:gsub('%["(.-)"%]', function(field) return '.' .. field end)
+        :gsub('%[\'(.-)\'%]', function(field) return '.' .. field end)
+        :gsub('%[(%d+)]', function(field) return '.' .. field end)
+    local parts = split_string(expr, '%.')
+    local obj = df_env[parts[1]]
+    for i = 2, #parts do
+        local key = tonumber(parts[i]) or parts[i]
+        local cur = obj[key]
+        if i == #parts and ((type(cur) ~= 'userdata') or
+                type(cur) == 'userdata' and getmetatable(cur) == nil) then
+            obj = obj:_field(key)
+        else
+            obj = obj[key]
+        end
+    end
+    return obj
+end
+
+function addressof(obj)
+    return select(2, obj:sizeof())
+end
+
+function OrderedTable()
+    -- store values in a separate table to ensure that __index and __newindex
+    -- run on every table index operation
+    local t = {}
+    local key_to_index = {}
+    local index_to_key = {}
+
+    local mt = {}
+    function mt:__index(k)
+        return t[k]
+    end
+    function mt:__newindex(k, v)
+        if not key_to_index[k] then
+            table.insert(index_to_key, k)
+            key_to_index[k] = #index_to_key
+        end
+        t[k] = v
+    end
+    function mt:__pairs()
+        return function(_, k)
+            if k then
+                k = index_to_key[key_to_index[k] + 1]
+            else
+                k = index_to_key[1]
+            end
+            if k then
+                return k, t[k]
+            end
+        end, nil, nil
+    end
+
+    local self = {}
+    setmetatable(self, mt)
+    return self
 end
 
 return _ENV

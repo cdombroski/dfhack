@@ -18,6 +18,7 @@ using df::building_stockpilest;
 
 DFHACK_PLUGIN("automelt");
 #define PLUGIN_VERSION 0.3
+REQUIRE_GLOBAL(gps);
 REQUIRE_GLOBAL(world);
 REQUIRE_GLOBAL(cursor);
 REQUIRE_GLOBAL(ui);
@@ -167,15 +168,11 @@ DFhackCExport command_result plugin_onupdate ( color_ostream &out )
     if(!Maps::IsValid())
         return CR_OK;
 
-    static decltype(world->frame_counter) last_frame_count = 0;
-
     if (DFHack::World::ReadPauseState())
         return CR_OK;
 
-    if (world->frame_counter - last_frame_count < DELTA_TICKS)
+    if (world->frame_counter % DELTA_TICKS != 0)
         return CR_OK;
-
-    last_frame_count = world->frame_counter;
 
     monitor.doCycle();
 
@@ -193,6 +190,9 @@ struct melt_hook : public df::viewscreen_dwarfmodest
 
     bool handleInput(set<df::interface_key> *input)
     {
+        if (Gui::inRenameBuilding())
+            return false;
+
         building_stockpilest *sp = get_selected_stockpile();
         if (!sp)
             return false;
@@ -226,7 +226,7 @@ struct melt_hook : public df::viewscreen_dwarfmodest
         int left_margin = dims.menu_x1 + 1;
         int x = left_margin;
         int y = dims.y2 - 6;
-        
+
         int links = 0;
         links += sp->links.give_to_pile.size();
         links += sp->links.take_from_pile.size();
@@ -282,9 +282,6 @@ DFHACK_PLUGIN_IS_ENABLED(is_enabled);
 
 DFhackCExport command_result plugin_enable(color_ostream &out, bool enable)
 {
-    if (!gps)
-        return CR_FAILURE;
-
     if (enable != is_enabled)
     {
         if (!INTERPOSE_HOOK(melt_hook, feed).apply(enable) ||
@@ -301,7 +298,7 @@ DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <Plug
 {
     commands.push_back(
         PluginCommand(
-        "automelt", "Automatically flag metal items in marked stockpiles for melting.",
+        "automelt", "Automatically melt metal items in marked stockpiles.",
         automelt_cmd, false, ""));
 
     return CR_OK;

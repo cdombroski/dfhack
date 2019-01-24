@@ -33,10 +33,12 @@ distribution.
 #include <iostream>
 #include <cstring>
 #include <map>
+#include <memory>
+
+#include "VersionInfo.h"
 
 namespace DFHack
 {
-    struct VersionInfo;
     class Process;
     //class Window;
     class DFVector;
@@ -78,7 +80,7 @@ namespace DFHack
     {
         public:
             /// this is the single most important destructor ever. ~px
-            Process(VersionInfoFactory * known_versions);
+            Process(const VersionInfoFactory& known_versions);
             ~Process();
             /// read a 8-byte integer
             uint64_t readQuad(const void * address)
@@ -207,7 +209,7 @@ namespace DFHack
              * attempt to copy a string from source address to target address. may truncate or leak, depending on platform
              * @return length copied
              */
-            size_t copySTLString(const void * address, const uint32_t target)
+            size_t copySTLString(const void * address, const uintptr_t target)
             {
                 std::string * strsrc = (std::string *) address;
                 std::string * str = (std::string *) target;
@@ -246,10 +248,15 @@ namespace DFHack
             void getMemRanges(std::vector<t_memrange> & ranges );
 
             /// get the symbol table extension of this process
-            VersionInfo *getDescriptor()
+            std::shared_ptr<DFHack::VersionInfo> getDescriptor()
             {
                 return my_descriptor;
             };
+
+            void ValidateDescriptionOS() {
+                my_descriptor->ValidateOS();
+            };
+
             uintptr_t getBase();
             /// get the DF Process ID
             int getPID();
@@ -287,13 +294,18 @@ namespace DFHack
                 EXEC = 4
             };
 
+            uint32_t getPE() { return my_pe; }
+            std::string getMD5() { return my_md5; }
+
     private:
-        VersionInfo * my_descriptor;
+        std::shared_ptr<VersionInfo> my_descriptor;
         PlatformSpecific *d;
         bool identified;
         uint32_t my_pid;
         uint32_t base;
         std::map<void *, std::string> classNameCache;
+        uint32_t my_pe;
+        std::string my_md5;
     };
 
     class DFHACK_EXPORT ClassNameCheck

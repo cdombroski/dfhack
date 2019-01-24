@@ -1,33 +1,37 @@
 // Just show some position data
 
-#include <iostream>
-#include <iomanip>
 #include <climits>
-#include <vector>
-#include <string>
-#include <sstream>
-#include <ctime>
 #include <cstdio>
+#include <ctime>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
 using namespace std;
 
-#include "Core.h"
 #include "Console.h"
+#include "Core.h"
 #include "Export.h"
-#include "PluginManager.h"
-#include "modules/Units.h"
-#include "df/unit_inventory_item.h"
-#include "df/building_nest_boxst.h"
-#include "modules/Maps.h"
-#include "modules/Gui.h"
-#include "modules/Materials.h"
-#include "modules/MapCache.h"
-#include "modules/Buildings.h"
 #include "MiscUtils.h"
+#include "PluginManager.h"
 
-#include "df/world.h"
-#include "df/world_raws.h"
+#include "modules/Buildings.h"
+#include "modules/Gui.h"
+#include "modules/MapCache.h"
+#include "modules/Maps.h"
+#include "modules/Materials.h"
+#include "modules/Units.h"
+
+#include "df/block_square_event_grassst.h"
+#include "df/block_square_event_world_constructionst.h"
 #include "df/building_def.h"
+#include "df/building_nest_boxst.h"
 #include "df/region_map_entry.h"
+#include "df/unit_inventory_item.h"
+#include "df/world.h"
+#include "df/world_data.h"
+#include "df/world_raws.h"
 
 using std::vector;
 using std::string;
@@ -84,7 +88,7 @@ command_result df_cprobe (color_ostream &out, vector <string> & parameters)
             if(unit->pos.x == cursorX && unit->pos.y == cursorY && unit->pos.z == cursorZ)
             {
                 out.print("Creature %d, race %d (%x), civ %d (%x)\n", unit->id, unit->race, unit->race, unit->civ_id, unit->civ_id);
-                
+
                 for(size_t j=0; j<unit->inventory.size(); j++)
                 {
                     df::unit_inventory_item* inv_item = unit->inventory[j];
@@ -101,7 +105,7 @@ command_result df_cprobe (color_ostream &out, vector <string> & parameters)
                         out << endl;
                     }
                 }
-                
+
                 // don't leave loop, there may be more than 1 creature at the cursor position
                 //break;
             }
@@ -115,6 +119,7 @@ void describeTile(color_ostream &out, df::tiletype tiletype)
     out.print("%d", tiletype);
     if(tileName(tiletype))
         out.print(" = %s",tileName(tiletype));
+    out.print(" (%s)", ENUM_KEY_STR(tiletype, tiletype).c_str());
     out.print("\n");
 
     df::tiletype_shape shape = tileShape(tiletype);
@@ -186,7 +191,7 @@ command_result df_probe (color_ostream &out, vector <string> & parameters)
     }
 
     auto &block = *b->getRaw();
-    out.print("block addr: 0x%x\n\n", &block);
+    out.print("block addr: 0x%p\n\n", &block);
 /*
     if (showBlock)
     {
@@ -198,6 +203,7 @@ command_result df_probe (color_ostream &out, vector <string> & parameters)
     df::tiletype tiletype = mc.tiletypeAt(cursor);
     df::tile_designation &des = block.designation[tileX][tileY];
     df::tile_occupancy &occ = block.occupancy[tileX][tileY];
+    uint8_t fog_of_war = block.fog_of_war[tileX][tileY];
 /*
     if(showDesig)
     {
@@ -242,7 +248,7 @@ command_result df_probe (color_ostream &out, vector <string> & parameters)
     const char* surroundings[] = { "Serene", "Mirthful", "Joyous Wilds", "Calm", "Wilderness", "Untamed Wilds", "Sinister", "Haunted", "Terrifying" };
 
     // biome, geolayer
-    out << "biome: " << des.bits.biome << " (" << 
+    out << "biome: " << des.bits.biome << " (" <<
         "region id=" << biome->region_id << ", " <<
         surroundings[surr] << ", " <<
         "savagery " << biome->savagery << ", " <<
@@ -303,6 +309,9 @@ command_result df_probe (color_ostream &out, vector <string> & parameters)
     if(des.bits.water_stagnant)
         out << "stagnant" << endl;
 
+    out.print("%-16s= %s\n", "dig", ENUM_KEY_STR(tile_dig_designation, des.bits.dig).c_str());
+    out.print("%-16s= %s\n", "traffic", ENUM_KEY_STR(tile_traffic, des.bits.traffic).c_str());
+
     #define PRINT_FLAG( FIELD, BIT )  out.print("%-16s= %c\n", #BIT , ( FIELD.bits.BIT ? 'Y' : ' ' ) )
     PRINT_FLAG( des, hidden );
     PRINT_FLAG( des, light );
@@ -311,6 +320,7 @@ command_result df_probe (color_ostream &out, vector <string> & parameters)
     PRINT_FLAG( des, water_table );
     PRINT_FLAG( des, rained );
     PRINT_FLAG( occ, monster_lair);
+    out.print("%-16s= %d\n", "fog_of_war", fog_of_war);
 
     df::coord2d pc(blockX, blockY);
 
@@ -323,7 +333,7 @@ command_result df_probe (color_ostream &out, vector <string> & parameters)
         out.print("%-16s", "");
         out.print("  %4d", block.local_feature);
         out.print(" (%2d)", local.type);
-        out.print(" addr 0x%X ", local.origin);
+        out.print(" addr 0x%p ", local.origin);
         out.print(" %s\n", sa_feature(local.type));
     }
     PRINT_FLAG( des, feature_global );
@@ -345,7 +355,7 @@ command_result df_probe (color_ostream &out, vector <string> & parameters)
         out << "no grow" << endl;
 
     for(size_t e=0; e<block.block_events.size(); e++)
-    {            
+    {
         df::block_square_event * blev = block.block_events[e];
         df::block_square_event_type blevtype = blev->getType();
         switch(blevtype)
@@ -391,9 +401,9 @@ command_result df_bprobe (color_ostream &out, vector <string> & parameters)
         Buildings::t_building building;
         if (!Buildings::Read(i, building))
             continue;
-        if (!(building.x1 <= cursor->x && cursor->x <= building.x2 &&
-            building.y1 <= cursor->y && cursor->y <= building.y2 &&
-            building.z == cursor->z))
+        if (int32_t(building.x1) > cursor->x || cursor->x > int32_t(building.x2) ||
+            int32_t(building.y1) > cursor->y || cursor->y > int32_t(building.y2) ||
+            int32_t(building.z) != cursor->z)
             continue;
         string name;
         building.origin->getName(&name);
@@ -451,7 +461,7 @@ command_result df_bprobe (color_ostream &out, vector <string> & parameters)
         case building_type::NestBox:
             {
                 df::building_nest_boxst* nestbox = (df::building_nest_boxst*) building.origin;
-                out.print(", claimed:(%i), items:%i", nestbox->claimed_by, nestbox->contained_items.size());
+                out.print(", claimed:(%i), items:%zu", nestbox->claimed_by, nestbox->contained_items.size());
                 break;
             }
         default:

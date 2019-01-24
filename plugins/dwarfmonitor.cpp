@@ -1,4 +1,5 @@
 #include "uicommon.h"
+#include "listcolumn.h"
 
 #include "DataDefs.h"
 
@@ -10,36 +11,42 @@
 #include "df/misc_trait_type.h"
 #include "df/unit_misc_trait.h"
 
+#include "LuaTools.h"
+#include "LuaWrapper.h"
 #include "modules/Gui.h"
 #include "modules/Units.h"
 #include "modules/Translation.h"
 #include "modules/World.h"
 #include "modules/Maps.h"
-#include "df/activity_event.h"
+
 #include "df/activity_entry.h"
+#include "df/activity_event.h"
+#include "df/creature_raw.h"
+#include "df/dance_form.h"
+#include "df/descriptor_color.h"
+#include "df/descriptor_shape.h"
+#include "df/item_type.h"
+#include "df/itemdef_ammost.h"
+#include "df/itemdef_armorst.h"
+#include "df/itemdef_foodst.h"
+#include "df/itemdef_glovesst.h"
+#include "df/itemdef_helmst.h"
+#include "df/itemdef_instrumentst.h"
+#include "df/itemdef_pantsst.h"
+#include "df/itemdef_shieldst.h"
+#include "df/itemdef_shoesst.h"
+#include "df/itemdef_siegeammost.h"
+#include "df/itemdef_toolst.h"
+#include "df/itemdef_toyst.h"
+#include "df/itemdef_trapcompst.h"
+#include "df/itemdef_weaponst.h"
+#include "df/musical_form.h"
+#include "df/poetic_form.h"
+#include "df/trapcomp_flags.h"
 #include "df/unit_preference.h"
 #include "df/unit_soul.h"
-#include "df/item_type.h"
-
-#include "df/itemdef_weaponst.h"
-#include "df/itemdef_trapcompst.h"
-#include "df/itemdef_toyst.h"
-#include "df/itemdef_toolst.h"
-#include "df/itemdef_instrumentst.h"
-#include "df/itemdef_armorst.h"
-#include "df/itemdef_ammost.h"
-#include "df/itemdef_siegeammost.h"
-#include "df/itemdef_glovesst.h"
-#include "df/itemdef_shoesst.h"
-#include "df/itemdef_shieldst.h"
-#include "df/itemdef_helmst.h"
-#include "df/itemdef_pantsst.h"
-#include "df/itemdef_foodst.h"
-#include "df/trapcomp_flags.h"
-#include "df/creature_raw.h"
+#include "df/viewscreen_unitst.h"
 #include "df/world_raws.h"
-#include "df/descriptor_shape.h"
-#include "df/descriptor_color.h"
 
 using std::deque;
 
@@ -67,9 +74,15 @@ struct less_second {
     }
 };
 
+struct dwarfmonitor_configst {
+    std::string date_format;
+};
+static dwarfmonitor_configst dwarfmonitor_config;
+
 static bool monitor_jobs = false;
 static bool monitor_misery = true;
 static bool monitor_date = true;
+static bool monitor_weather = true;
 static map<df::unit *, deque<activity_type>> work_history;
 
 static int misery[] = { 0, 0, 0, 0, 0, 0, 0 };
@@ -88,21 +101,10 @@ static color_value monitor_colors[] =
 
 static int get_happiness_cat(df::unit *unit)
 {
-    int stress = unit->status.current_soul->personality.stress_level;
-    if (stress >= 500000)
-        return 0;
-    else if (stress >= 250000)
-        return 1;
-    else if (stress >= 100000)
-        return 2;
-    else if (stress >= 60000)
-        return 3;
-    else if (stress >= 30000)
-        return 4;
-    else if (stress >= 0)
-        return 5;
-    else
-        return 6;
+    int level = Units::getStressCategory(unit);
+    if (level < 0) level = 0;
+    if (level > 6) level = 6;
+    return level;
 }
 
 static int get_max_history()
@@ -126,6 +128,14 @@ static string getUnitName(df::unit * unit)
     return label;
 }
 
+template<typename T>
+static string getFormName(int32_t id, const string &default_ = "?") {
+    T *form = T::find(id);
+    if (form)
+        return Translation::TranslateName(&form->name);
+    return default_;
+}
+
 static void send_key(const df::interface_key &key)
 {
     set< df::interface_key > keys;
@@ -136,11 +146,110 @@ static void send_key(const df::interface_key &key)
 static void move_cursor(df::coord &pos)
 {
     Gui::setCursorCoords(pos.x, pos.y, pos.z);
-    send_key(interface_key::CURSOR_DOWN_Z);
-    send_key(interface_key::CURSOR_UP_Z);
+    Gui::refreshSidebar();
 }
 
-static void open_stats_srceen();
+static void open_stats_screen();
+
+namespace dm_lua {
+    static color_ostream_proxy *out;
+    static lua_State *state;
+    typedef int(*initializer)(lua_State*);
+    int no_args (lua_State *L) { return 0; }
+    void cleanup()
+    {
+        if (out)
+        {
+            delete out;
+            out = NULL;
+        }
+        lua_close(state);
+    }
+    bool init_call (const char *func)
+    {
+        if (!out)
+            out = new color_ostream_proxy(Core::getInstance().getConsole());
+        return Lua::PushModulePublic(*out, state, "plugins.dwarfmonitor", func);
+    }
+    bool safe_call (int nargs)
+    {
+        return Lua::SafeCall(*out, state, nargs, 0);
+    }
+
+    bool call (const char *func, initializer init = no_args)
+    {
+        Lua::StackUnwinder top(state);
+        if (!init_call(func))
+            return false;
+        int nargs = init(state);
+        return safe_call(nargs);
+    }
+
+    namespace api {
+        int monitor_state (lua_State *L)
+        {
+            std::string type = luaL_checkstring(L, 1);
+            if (type == "weather")
+                lua_pushboolean(L, monitor_weather);
+            else if (type == "misery")
+                lua_pushboolean(L, monitor_misery);
+            else if (type == "date")
+                lua_pushboolean(L, monitor_date);
+            else
+                lua_pushnil(L);
+            return 1;
+        }
+        int get_weather_counts (lua_State *L)
+        {
+            #define WEATHER_TYPES WTYPE(clear, None); WTYPE(rain, Rain); WTYPE(snow, Snow);
+            #define WTYPE(type, name) int type = 0;
+            WEATHER_TYPES
+            #undef WTYPE
+            int i, j;
+            for (i = 0; i < 5; ++i)
+            {
+                for (j = 0; j < 5; ++j)
+                {
+                    switch ((*current_weather)[i][j])
+                    {
+                        #define WTYPE(type, name) case weather_type::name: type++; break;
+                        WEATHER_TYPES
+                        #undef WTYPE
+                    }
+                }
+            }
+            lua_newtable(L);
+            #define WTYPE(type, name) Lua::TableInsert(L, #type, type);
+            WEATHER_TYPES
+            #undef WTYPE
+            #undef WEATHER_TYPES
+            return 1;
+        }
+        int get_misery_data (lua_State *L)
+        {
+            lua_newtable(L);
+            for (int i = 0; i < 7; i++)
+            {
+                Lua::Push(L, i);
+                lua_newtable(L);
+                Lua::TableInsert(L, "value", misery[i]);
+                Lua::TableInsert(L, "color", monitor_colors[i]);
+                Lua::TableInsert(L, "last", (i == 6));
+                lua_settable(L, -3);
+            }
+            return 1;
+        }
+    }
+}
+
+#define DM_LUA_FUNC(name) { #name, df::wrap_function(dm_lua::api::name, true) }
+#define DM_LUA_CMD(name) { #name, dm_lua::api::name }
+DFHACK_PLUGIN_LUA_COMMANDS {
+    DM_LUA_CMD(monitor_state),
+    DM_LUA_CMD(get_weather_counts),
+    DM_LUA_CMD(get_misery_data),
+    DFHACK_LUA_END
+};
 
 #define JOB_IDLE -1
 #define JOB_UNKNOWN -2
@@ -216,7 +325,7 @@ public:
         for (auto it = work_history.begin(); it != work_history.end();)
         {
             auto unit = it->first;
-            if (Units::isDead(unit))
+            if (!Units::isActive(unit))
             {
                 work_history.erase(it++);
                 continue;
@@ -322,7 +431,7 @@ public:
         else if  (input->count(interface_key::CUSTOM_SHIFT_D))
         {
             Screen::dismiss(this);
-            open_stats_srceen();
+            open_stats_screen();
         }
         else if  (input->count(interface_key::CUSTOM_SHIFT_Z))
         {
@@ -370,6 +479,8 @@ public:
 
     void render()
     {
+        using namespace df::enums::interface_key;
+
         if (Screen::isDismissed(this))
             return;
 
@@ -383,18 +494,18 @@ public:
 
         int32_t y = gps->dimy - 4;
         int32_t x = 2;
-        OutputHotkeyString(x, y, "Leave", "Esc");
+        OutputHotkeyString(x, y, "Leave", LEAVESCREEN);
 
         x += 13;
         string window_label = "Window Months: " + int_to_string(window_days / min_window);
-        OutputHotkeyString(x, y, window_label.c_str(), "*");
+        OutputHotkeyString(x, y, window_label.c_str(), SECONDSCROLL_PAGEDOWN);
 
         ++y;
         x = 2;
-        OutputHotkeyString(x, y, "Fort Stats", "Shift-D");
+        OutputHotkeyString(x, y, "Fort Stats", CUSTOM_SHIFT_D);
 
         x += 3;
-        OutputHotkeyString(x, y, "Zoom Unit", "Shift-Z");
+        OutputHotkeyString(x, y, "Zoom Unit", CUSTOM_SHIFT_Z);
     }
 
     std::string getFocusString() { return "dwarfmonitor_dwarfstats"; }
@@ -459,7 +570,7 @@ public:
         for (auto it = work_history.begin(); it != work_history.end();)
         {
             auto unit = it->first;
-            if (Units::isDead(unit))
+            if (!Units::isActive(unit))
             {
                 work_history.erase(it++);
                 continue;
@@ -587,7 +698,6 @@ public:
                     case job_type::MakeChain:
                     case job_type::MakeFlask:
                     case job_type::MakeGoblet:
-                    case job_type::MakeInstrument:
                     case job_type::MakeToy:
                     case job_type::MakeAnimalTrap:
                     case job_type::MakeBarrel:
@@ -939,7 +1049,7 @@ public:
         {
             df::unit *selected_unit = (selected_column == 1) ? dwarf_activity_column.getFirstSelectedElem() : nullptr;
             Screen::dismiss(this);
-            Screen::show(new ViewscreenDwarfStats(selected_unit));
+            Screen::show(dts::make_unique<ViewscreenDwarfStats>(selected_unit), plugin_self);
         }
         else if  (input->count(interface_key::CUSTOM_SHIFT_Z))
         {
@@ -979,6 +1089,8 @@ public:
 
     void render()
     {
+        using namespace df::enums::interface_key;
+
         if (Screen::isDismissed(this))
             return;
 
@@ -993,18 +1105,18 @@ public:
 
         int32_t y = gps->dimy - 4;
         int32_t x = 2;
-        OutputHotkeyString(x, y, "Leave", "Esc");
+        OutputHotkeyString(x, y, "Leave", LEAVESCREEN);
 
         x += 13;
         string window_label = "Window Months: " + int_to_string(window_days / min_window);
-        OutputHotkeyString(x, y, window_label.c_str(), "*");
+        OutputHotkeyString(x, y, window_label.c_str(), SECONDSCROLL_PAGEDOWN);
 
         ++y;
         x = 2;
-        OutputHotkeyString(x, y, "Dwarf Stats", "Shift-D");
+        OutputHotkeyString(x, y, "Dwarf Stats", CUSTOM_SHIFT_D);
 
         x += 3;
-        OutputHotkeyString(x, y, "Zoom Unit", "Shift-Z");
+        OutputHotkeyString(x, y, "Zoom Unit", CUSTOM_SHIFT_Z);
     }
 
     std::string getFocusString() { return "dwarfmonitor_fortstats"; }
@@ -1092,6 +1204,18 @@ struct preference_map
             break;
 
         default:
+            label = ENUM_ATTR_STR(item_type, caption, pref.item_type);
+            if (label.size())
+            {
+                if (label[label.size() - 1] == 's')
+                    label += "es";
+                else
+                    label += "s";
+            }
+            else
+            {
+                label = "UNKNOWN";
+            }
             break;
         }
 
@@ -1108,15 +1232,13 @@ struct preference_map
         {
         case (T_type::LikeCreature):
         {
-            label = "Creature :";
-            Units::getRaceNamePluralById(pref.creature_id);
+            label = "Creature :" + Units::getRaceNamePluralById(pref.creature_id);
             break;
         }
 
         case (T_type::HateCreature):
         {
-            label = "Hates    :";
-            Units::getRaceNamePluralById(pref.creature_id);
+            label = "Hates    :" + Units::getRaceNamePluralById(pref.creature_id);
             break;
         }
 
@@ -1168,7 +1290,7 @@ struct preference_map
         }
 
         case (T_type::LikeShape):
-            label += "Shape    :" + raws.language.shapes[pref.shape_id]->name_plural;
+            label += "Shape    :" + raws.descriptors.shapes[pref.shape_id]->name_plural;
             break;
 
         case (T_type::LikeTree):
@@ -1179,7 +1301,23 @@ struct preference_map
         }
 
         case (T_type::LikeColor):
-            label += "Color    :" + raws.language.colors[pref.color_id]->name;
+            label += "Color    :" + raws.descriptors.colors[pref.color_id]->name;
+            break;
+
+        case (T_type::LikePoeticForm):
+            label += "Poetry   :" + getFormName<df::poetic_form>(pref.poetic_form_id);
+            break;
+
+        case (T_type::LikeMusicalForm):
+            label += "Music    :" + getFormName<df::musical_form>(pref.musical_form_id);
+            break;
+
+        case (T_type::LikeDanceForm):
+            label += "Dance    :" + getFormName<df::dance_form>(pref.dance_form_id);
+            break;
+
+        default:
+            label += string("UNKNOWN ") + ENUM_KEY_STR(unit_preference::T_type, pref.type);
             break;
         }
     }
@@ -1195,14 +1333,14 @@ public:
         preferences_column.auto_select = true;
         preferences_column.setTitle("Preference");
         preferences_column.bottom_margin = 3;
-        preferences_column.search_margin = 35;
+        preferences_column.search_margin = 50;
 
         dwarf_column.multiselect = false;
         dwarf_column.auto_select = true;
         dwarf_column.allow_null = true;
         dwarf_column.setTitle("Units with Preference");
         dwarf_column.bottom_margin = 3;
-        dwarf_column.search_margin = 35;
+        dwarf_column.search_margin = 50;
 
         populatePreferencesColumn();
     }
@@ -1221,7 +1359,7 @@ public:
             if (!Units::isCitizen(unit))
                 continue;
 
-            if (DFHack::Units::isDead(unit))
+            if (!DFHack::Units::isActive(unit))
                 continue;
 
             if (!unit->status.current_soul)
@@ -1335,6 +1473,18 @@ public:
                 return false;
             break;
 
+        case (T_type::LikePoeticForm):
+            return lhs.poetic_form_id == rhs.poetic_form_id;
+            break;
+
+        case (T_type::LikeMusicalForm):
+            return lhs.musical_form_id == rhs.musical_form_id;
+            break;
+
+        case (T_type::LikeDanceForm):
+            return lhs.dance_form_id == rhs.dance_form_id;
+            break;
+
         default:
             return false;
         }
@@ -1374,8 +1524,13 @@ public:
         case (T_type::LikeColor):
             return COLOR_BLUE;
 
+        case (T_type::LikePoeticForm):
+        case (T_type::LikeMusicalForm):
+        case (T_type::LikeDanceForm):
+            return COLOR_LIGHTCYAN;
+
         default:
-            return false;
+            return COLOR_LIGHTMAGENTA;
         }
 
         return true;
@@ -1434,6 +1589,11 @@ public:
         dwarf_column.setHighlight(0);
     }
 
+    df::unit *getSelectedUnit() override
+    {
+        return (selected_column == 1) ? dwarf_column.getFirstSelectedElem() : nullptr;
+    }
+
     void feed(set<df::interface_key> *input)
     {
         bool key_processed = false;
@@ -1463,9 +1623,19 @@ public:
             Screen::dismiss(this);
             return;
         }
+        else if  (input->count(interface_key::CUSTOM_SHIFT_V))
+        {
+            df::unit *unit = getSelectedUnit();
+            if (unit)
+            {
+                auto unitscr = df::allocate<df::viewscreen_unitst>();
+                unitscr->unit = unit;
+                Screen::show(std::unique_ptr<df::viewscreen>(unitscr));
+            }
+        }
         else if  (input->count(interface_key::CUSTOM_SHIFT_Z))
         {
-            df::unit *selected_unit = (selected_column == 1) ? dwarf_column.getFirstSelectedElem() : nullptr;
+            df::unit *selected_unit = getSelectedUnit();
             if (selected_unit)
             {
                 input->clear();
@@ -1501,6 +1671,8 @@ public:
 
     void render()
     {
+        using namespace df::enums::interface_key;
+
         if (Screen::isDismissed(this))
             return;
 
@@ -1514,10 +1686,15 @@ public:
 
         int32_t y = gps->dimy - 3;
         int32_t x = 2;
-        OutputHotkeyString(x, y, "Leave", "Esc");
+        OutputHotkeyString(x, y, "Leave", LEAVESCREEN);
 
         x += 2;
-        OutputHotkeyString(x, y, "Zoom Unit", "Shift-Z");
+        OutputHotkeyString(x, y, "View Unit", CUSTOM_SHIFT_V, false, 0,
+            getSelectedUnit() ? COLOR_WHITE : COLOR_DARKGREY);
+
+        x += 2;
+        OutputHotkeyString(x, y, "Zoom Unit", CUSTOM_SHIFT_Z, false, 0,
+            getSelectedUnit() ? COLOR_WHITE : COLOR_DARKGREY);
     }
 
     std::string getFocusString() { return "dwarfmonitor_preferences"; }
@@ -1545,9 +1722,9 @@ private:
 };
 
 
-static void open_stats_srceen()
+static void open_stats_screen()
 {
-    Screen::show(new ViewscreenFortStats());
+    Screen::show(dts::make_unique<ViewscreenFortStats>(), plugin_self);
 }
 
 static void add_work_history(df::unit *unit, activity_type type)
@@ -1565,11 +1742,11 @@ static void add_work_history(df::unit *unit, activity_type type)
 
 static bool is_at_leisure(df::unit *unit)
 {
-    for (auto p = unit->status.misc_traits.begin(); p < unit->status.misc_traits.end(); p++)
-    {
-        if ((*p)->id == misc_trait_type::Migrant || (*p)->id == misc_trait_type::OnBreak)
-            return true;
-    }
+    if (Units::getMiscTrait(unit, misc_trait_type::Migrant))
+        return true;
+
+    if (!unit->job.current_job && Units::getMainSocialActivity(unit))
+        return true;
 
     return false;
 }
@@ -1598,7 +1775,7 @@ static void update_dwarf_stats(bool is_paused)
         if (!Units::isCitizen(unit))
             continue;
 
-        if (DFHack::Units::isDead(unit))
+        if (!DFHack::Units::isActive(unit))
         {
             auto it = work_history.find(unit);
             if (it != work_history.end())
@@ -1653,8 +1830,6 @@ DFhackCExport command_result plugin_onupdate (color_ostream &out)
     if(!Maps::IsValid())
         return CR_OK;
 
-    static decltype(world->frame_counter) last_frame_count = 0;
-
     bool is_paused = DFHack::World::ReadPauseState();
     if (is_paused)
     {
@@ -1665,10 +1840,8 @@ DFhackCExport command_result plugin_onupdate (color_ostream &out)
     }
     else
     {
-        if (world->frame_counter - last_frame_count < DELTA_TICKS)
+        if (world->frame_counter % DELTA_TICKS != 0)
             return CR_OK;
-
-        last_frame_count = world->frame_counter;
     }
 
     update_dwarf_stats(is_paused);
@@ -1680,97 +1853,18 @@ struct dwarf_monitor_hook : public df::viewscreen_dwarfmodest
 {
     typedef df::viewscreen_dwarfmodest interpose_base;
 
-    DEFINE_VMETHOD_INTERPOSE(void, feed, (set<df::interface_key> *input))
-    {
-        INTERPOSE_NEXT(feed)(input);
-    }
-
     DEFINE_VMETHOD_INTERPOSE(void, render, ())
     {
         INTERPOSE_NEXT(render)();
 
+        CoreSuspendClaimer suspend;
         if (Maps::IsValid())
         {
-            if (monitor_misery)
-            {
-                string entries[7];
-                size_t length = 9;
-                for (int i = 0; i < 7; i++)
-                {
-                    entries[i] = int_to_string(misery[i]);
-                    length += entries[i].length();
-                }
-
-                int x = gps->dimx - length;
-                int y = gps->dimy - 1;
-                OutputString(COLOR_WHITE, x, y, "H:");
-                for (int i = 0; i < 7; i++)
-                {
-                    OutputString(monitor_colors[i], x, y, entries[i]);
-                    if (i < 6)
-                        OutputString(COLOR_WHITE, x, y, "/");
-                }
-            }
-
-            if (monitor_date)
-            {
-                int x = gps->dimx - 30;
-                int y = 0;
-
-                ostringstream date_str;
-                auto month = World::ReadCurrentMonth() + 1;
-                auto day = World::ReadCurrentDay();
-                date_str << "Date:" << World::ReadCurrentYear() << "-" << 
-                    ((month < 10) ? "0" : "") << month << "-" << 
-                    ((day < 10) ? "0" : "") << day;
-
-                OutputString(COLOR_GREY, x, y, date_str.str());
-
-                x = 1;
-                y = gps->dimy - 1;
-                bool clear = false,
-                     rain = false,
-                     snow = false;
-                if (current_weather)
-                {
-                    int i, j;
-                    for (i = 0; i < 5; ++i)
-                    {
-                        for (j = 0; j < 5; ++j)
-                        {
-                            switch ((*current_weather)[i][j])
-                            {
-                                case weather_type::None:
-                                    clear = true;
-                                    break;
-                                case weather_type::Rain:
-                                    rain = true;
-                                    break;
-                                case weather_type::Snow:
-                                    snow = true;
-                                    break;
-                            }
-                        }
-                    }
-                }
-                if (clear && (rain || snow))
-                {
-                    OutputString(COLOR_YELLOW, x, y, "Clear");
-                    ++x;
-                }
-                if (rain)
-                {
-                    OutputString(COLOR_LIGHTBLUE, x, y, "Rain");
-                    ++x;
-                }
-                if (snow)
-                    OutputString(COLOR_WHITE, x, y, "Snow");
-            }
+            dm_lua::call("render_all");
         }
     }
 };
 
-IMPLEMENT_VMETHOD_INTERPOSE(dwarf_monitor_hook, feed);
 IMPLEMENT_VMETHOD_INTERPOSE(dwarf_monitor_hook, render);
 
 static bool set_monitoring_mode(const string &mode, const bool &state)
@@ -1787,29 +1881,37 @@ static bool set_monitoring_mode(const string &mode, const bool &state)
         if (!monitor_jobs)
             reset();
     }
-    else if (mode == "misery" || mode == "all")
+    if (mode == "misery" || mode == "all")
     {
         mode_recognized = true;
         monitor_misery = state;
     }
-    else if (mode == "date" || mode == "all")
+    if (mode == "date" || mode == "all")
     {
         mode_recognized = true;
         monitor_date = state;
+    }
+    if (mode == "weather" || mode == "all")
+    {
+        mode_recognized = true;
+        monitor_weather = state;
     }
 
     return mode_recognized;
 }
 
+static bool load_config()
+{
+    return dm_lua::call("load_config");
+}
+
 DFhackCExport command_result plugin_enable(color_ostream &out, bool enable)
 {
-    if (!gps)
-        return CR_FAILURE;
-
+    if (enable)
+        load_config();
     if (is_enabled != enable)
     {
-        if (!INTERPOSE_HOOK(dwarf_monitor_hook, feed).apply(enable) ||
-            !INTERPOSE_HOOK(dwarf_monitor_hook, render).apply(enable))
+        if (!INTERPOSE_HOOK(dwarf_monitor_hook, render).apply(enable))
             return CR_FAILURE;
 
         reset();
@@ -1862,12 +1964,16 @@ static command_result dwarfmonitor_cmd(color_ostream &out, vector <string> & par
         else if (cmd == 's' || cmd == 'S')
         {
             if(Maps::IsValid())
-                Screen::show(new ViewscreenFortStats());
+                Screen::show(dts::make_unique<ViewscreenFortStats>(), plugin_self);
         }
         else if (cmd == 'p' || cmd == 'P')
         {
             if(Maps::IsValid())
-                Screen::show(new ViewscreenPreferences());
+                Screen::show(dts::make_unique<ViewscreenPreferences>(), plugin_self);
+        }
+        else if (cmd == 'r' || cmd == 'R')
+        {
+            load_config();
         }
         else
         {
@@ -1907,15 +2013,27 @@ DFhackCExport command_result plugin_init(color_ostream &out, std::vector <Plugin
         dwarfmonitor_cmd, false,
         "dwarfmonitor enable <mode>\n"
         "  Start monitoring <mode>\n"
-        "    <mode> can be \"work\", \"misery\", or \"all\"\n"
+        "    <mode> can be \"work\", \"misery\", \"weather\", or \"all\"\n"
         "dwarfmonitor disable <mode>\n"
         "    <mode> as above\n\n"
         "dwarfmonitor stats\n"
         "  Show statistics summary\n"
         "dwarfmonitor prefs\n"
         "  Show dwarf preferences summary\n\n"
+        "dwarfmonitor reload\n"
+        "  Reload configuration file (dfhack-config/dwarfmonitor.json)\n"
         ));
 
+    dm_lua::state = Lua::Open(out);
+    if (dm_lua::state == NULL)
+        return CR_FAILURE;
+
+    return CR_OK;
+}
+
+DFhackCExport command_result plugin_shutdown(color_ostream &out)
+{
+    dm_lua::cleanup();
     return CR_OK;
 }
 

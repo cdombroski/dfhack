@@ -61,6 +61,10 @@ function dfhack.pcall(f, ...)
 end
 
 function qerror(msg, level)
+    local name = dfhack.current_script_name()
+    if name and not tostring(msg):match(name) then
+        msg = name .. ': ' .. tostring(msg)
+    end
     dfhack.error(msg, (level or 1) + 1, false)
 end
 
@@ -176,6 +180,116 @@ function printall_ipairs(table)
     end
 end
 
+local do_print_recurse
+
+local function print_string(printfn, v, seen, indent)
+    local str = tostring(v)
+    printfn(str)
+    return #str;
+end
+
+local fill_chars = {
+    __index = function(table, key, value)
+        local rv = string.rep(' ', 23 - key) .. ' = '
+        rawset(table, key, rv)
+        return rv
+    end,
+}
+
+setmetatable(fill_chars, fill_chars)
+
+local function print_fields(value, seen, indent, prefix)
+    local ok,f,t,k = pcall(pairs,value)
+    if not ok then
+        dfhack.print(prefix)
+        dfhack.println('<Type doesn\'t support iteration with pairs>')
+        return 0
+    end
+    local prev_value = "not a value"
+    local repeated = 0
+    for k, v in f,t,k do
+        -- Only show set values of bitfields
+        if value._kind ~= "bitfield" or v then
+            local continue = false
+            if type(k) == "number" then
+                if prev_value == v then
+                    repeated = repeated + 1
+                    continue = true
+                else
+                    prev_value = v
+                end
+            else
+                prev_value = "not a value"
+            end
+            if not continue then
+                if repeated > 0 then
+                    dfhack.println(prefix .. "<Repeated " .. repeated .. " times>")
+                    repeated = 0
+                end
+                dfhack.print(prefix)
+                local len = do_print_recurse(dfhack.print, k, seen, indent + 1)
+                dfhack.print(fill_chars[len <= 23 and len or 23])
+                do_print_recurse(dfhack.println, v, seen, indent + 1)
+            end
+        end
+    end
+    if repeated > 0 then
+        dfhack.println(prefix .. "<Repeated " .. repeated .. " times>")
+    end
+    return 0
+end
+
+-- This should be same as print_array but userdata doesn't compare equal even if
+-- they hold same pointer.
+local function print_userdata(printfn, value, seen, indent)
+    local prefix = string.rep('    ', indent)
+    local strvalue = tostring(value)
+    dfhack.println(strvalue)
+    if seen[strvalue] then
+        dfhack.print(prefix)
+        dfhack.println('<Cyclic reference! Skipping fields>\n')
+        return 0
+    end
+    seen[strvalue] = true
+    return print_fields(value, seen, indent, prefix)
+end
+
+local function print_array(printfn, value, seen, indent)
+    local prefix = string.rep('    ', indent)
+    dfhack.println(tostring(value))
+    if seen[value] then
+        dfhack.print(prefix)
+        dfhack.println('<Cyclic reference! skipping fields>\n')
+        return 0
+    end
+    seen[value] = true
+    return print_fields(value, seen, indent, prefix)
+end
+
+local recurse_type_map = {
+    number = print_string,
+    string = print_string,
+    boolean = print_string,
+    ['function'] = print_string,
+    ['nil'] = print_string,
+    userdata = print_userdata,
+    table = print_array,
+}
+
+do_print_recurse = function(printfn, value, seen, indent)
+    local t = type(value)
+    if not recurse_type_map[t] then
+        printfn("Unknown type " .. t .. " " .. tostring(value))
+        return
+    end
+    return recurse_type_map[t](printfn, value, seen, indent)
+end
+
+function printall_recurse(value)
+    local seen = {}
+    do_print_recurse(dfhack.println, value, seen, 0)
+end
+
 function copyall(table)
     local rv = {}
     for k,v in pairs(table) do rv[k] = v end
@@ -247,6 +361,14 @@ function safe_index(obj,idx,...)
     end
 end
 
+function string:startswith(prefix)
+    return self:sub(1, #prefix) == prefix
+end
+
+function string:endswith(suffix)
+    return self:sub(-#suffix) == suffix or #suffix == 0
+end
+
 -- String conversions
 
 function dfhack.persistent:__tostring()
@@ -264,6 +386,12 @@ function dfhack.random:__tostring()
     return "<random generator>"
 end
 
+dfhack.penarray.__index = dfhack.penarray
+
+function dfhack.penarray.__tostring()
+    return "<penarray>"
+end
+
 function dfhack.maps.getSize()
     local map = df.global.world.map
     return map.x_count_block, map.y_count_block, map.z_count_block
@@ -277,6 +405,27 @@ end
 function dfhack.buildings.getSize(bld)
     local x, y = bld.x1, bld.y1
     return bld.x2+1-x, bld.y2+1-y, bld.centerx-x, bld.centery-y
+end
+
+function dfhack.gui.getViewscreenByType(scr_type, n)
+    -- translated from modules/Gui.cpp
+    if n == nil then
+        n = 1
+    end
+    local limit = (n > 0)
+    local scr = dfhack.gui.getCurViewscreen()
+    while scr do
+        if limit then
+            n = n - 1
+            if n < 0 then
+                return nil
+            end
+        end
+        if scr_type:is_instance(scr) then
+            return scr
+        end
+        scr = scr.parent
+    end
 end
 
 -- Interactive
@@ -295,6 +444,7 @@ function dfhack.interpreter(prompt,hfile,env)
               " '= foo' => '_1,_2,... = foo'\n"..
               " '! foo' => 'print(foo)'\n"..
               " '~ foo' => 'printall(foo)'\n"..
+              " '^ foo' => 'printall_recurse(foo)'\n"..
               " '@ foo' => 'printall_ipairs(foo)'\n"..
               "All of these save the first result as '_'.")
         print_banner = false
@@ -318,6 +468,9 @@ function dfhack.interpreter(prompt,hfile,env)
         ['@'] = function(data)
             print(table.unpack(data,2,data.n))
             printall_ipairs(data[2])
+        end,
+        ['^'] = function(data)
+            printall_recurse(data[2])
         end,
         ['='] = function(data)
             for i=2,data.n do
@@ -380,47 +533,125 @@ end
 
 local internal = dfhack.internal
 
-internal.scripts = internal.scripts or {}
+Script = defclass(Script)
+function Script:init(path)
+    self.path = path
+    self.mtime = dfhack.filesystem.mtime(path)
+    self._flags = {}
+end
+function Script:needs_update()
+    return (not self.env) or self.mtime ~= dfhack.filesystem.mtime(self.path)
+end
+function Script:get_flags()
+    if self.flags_mtime ~= dfhack.filesystem.mtime(self.path) then
+        self.flags_mtime = dfhack.filesystem.mtime(self.path)
+        self._flags = {}
+        local f = io.open(self.path)
+        local contents = f:read('*all')
+        f:close()
+        for line in contents:gmatch('%-%-@([^\n]+)') do
+            local chunk = load(line, self.path, 't', self._flags)
+            if chunk then
+                chunk()
+            else
+                dfhack.printerr('Parse error: ' .. line)
+            end
+        end
+    end
+    return self._flags
+end
 
+internal.scripts = internal.scripts or {}
 local scripts = internal.scripts
+
 local hack_path = dfhack.getHackPath()
 
 function dfhack.findScript(name)
-    local file
-    file = dfhack.getSavePath()
-    if file then
-        file = file .. '/raw/scripts/' .. name .. '.lua'
-        if dfhack.filesystem.exists(file) then
-            return file
-        end
-    end
-    local path = dfhack.getDFPath()
-    file = path..'/raw/scripts/' .. name .. '.lua'
-    if dfhack.filesystem.exists(file) then
-        return file
-    end
-    file = path..'/hack/scripts/'..name..'.lua'
-    if dfhack.filesystem.exists(file) then
-        return file
-    end
-    return nil
+    return dfhack.internal.findScript(name .. '.lua')
 end
+
+local valid_script_flags = {
+    enable = {required = true, error = 'Does not recognize enable/disable commands'},
+    enable_state = {required = false},
+    module = {
+        required = function(flags)
+            if flags.module_strict == false then return false end
+            return true
+        end,
+        error = 'Cannot be used as a module'
+    },
+    module_strict = {required = false},
+    alias = {required = false},
+    alias_count = {required = false},
+}
 
 function dfhack.run_script(name,...)
-    return dfhack.run_script_with_env(nil,name,...)
+    return dfhack.run_script_with_env(nil, name, nil, ...)
 end
 
-function dfhack.script_environment(name)
-    _, env = dfhack.run_script_with_env({moduleMode=true}, name)
-    return env
+function dfhack.enable_script(name, state)
+    local res, err = dfhack.pcall(dfhack.run_script_with_env, nil, name, {enable=true, enable_state=state})
+    if not res then
+        dfhack.printerr(err.message)
+        qerror(('Cannot %s Lua script: %s'):format(state and 'enable' or 'disable', name))
+    end
 end
 
-function dfhack.run_script_with_env(envVars,name,...)
+function dfhack.reqscript(name)
+    return dfhack.script_environment(name, true)
+end
+reqscript = dfhack.reqscript
+
+function dfhack.script_environment(name, strict)
+    local path = dfhack.findScript(name)
+    if not scripts[path] or scripts[path]:needs_update() then
+        local _, env = dfhack.run_script_with_env(nil, name, {
+            module=true,
+            module_strict=(strict and true or false)  -- ensure that this key is present if 'strict' is nil
+        })
+        return env
+    else
+        if strict and not scripts[path]:get_flags().module then
+            error(('%s: %s'):format(name, valid_script_flags.module.error))
+        end
+        return scripts[path].env
+    end
+end
+
+function dfhack.run_script_with_env(envVars, name, flags, ...)
+    if type(flags) ~= 'table' then flags = {} end
     local file = dfhack.findScript(name)
     if not file then
         error('Could not find script ' .. name)
     end
-    local env = scripts[file]
+
+    if scripts[file] == nil then
+        scripts[file] = Script(file)
+    end
+    local script_flags = scripts[file]:get_flags()
+    if script_flags.alias then
+        flags.alias_count = (flags.alias_count or 0) + 1
+        if flags.alias_count > 10 then
+            error('Too many script aliases: ' .. flags.alias_count)
+        end
+        return dfhack.run_script_with_env(envVars, script_flags.alias, flags, ...)
+    end
+    for flag, value in pairs(flags) do
+        if value then
+            local v = valid_script_flags[flag]
+            if not v then
+                error('Invalid flag: ' .. flag)
+            elseif ((type(v.required) == 'boolean' and v.required) or
+                    (type(v.required) == 'function' and v.required(flags))) then
+                if not script_flags[flag] then
+                    local msg = v.error or 'Flag "' .. flag .. '" not recognized'
+                    error(name .. ': ' .. msg)
+                end
+            end
+        end
+    end
+
+    local env = scripts[file].env
     if env == nil then
         env = {}
         setmetatable(env, { __index = base_env })
@@ -428,12 +659,80 @@ function dfhack.run_script_with_env(envVars,name,...)
     for x,y in pairs(envVars or {}) do
         env[x] = y
     end
-    local f,perr = loadfile(file, 't', env)
-    if f then
-        scripts[file] = env
-        return f(...), env
+    env.dfhack_flags = flags
+    env.moduleMode = flags.module
+    local script_code
+    local perr
+    local time = dfhack.filesystem.mtime(file)
+    if time == scripts[file].mtime and scripts[file].run then
+        script_code = scripts[file].run
+    else
+        --reload
+        script_code, perr = loadfile(file, 't', env)
+        if not script_code then
+            error(perr)
+        end
+        -- avoid updating mtime if the script failed to load
+        scripts[file].mtime = time
     end
-    error(perr)
+    scripts[file].env = env
+    scripts[file].run = script_code
+    return script_code(...), env
+end
+
+function dfhack.current_script_name()
+    local frame = 1
+    while true do
+        local info = debug.getinfo(frame, 'f')
+        if not info then break end
+        if info.func == dfhack.run_script_with_env then
+            local i = 1
+            while true do
+                local name, value = debug.getlocal(frame, i)
+                if not name then break end
+                if name == 'name' then
+                    return value
+                end
+                i = i + 1
+            end
+            break
+        end
+        frame = frame + 1
+    end
+end
+
+function dfhack.script_help(script_name, extension)
+    script_name = script_name or dfhack.current_script_name()
+    extension = extension or 'lua'
+    local full_name = script_name .. '.' .. extension
+    local path = dfhack.internal.findScript(script_name .. '.' .. extension)
+        or error("Could not find script: " .. full_name)
+    local begin_seq, end_seq
+    if extension == 'rb' then
+        begin_seq = '=begin'
+        end_seq = '=end'
+    else
+        begin_seq = '[====['
+        end_seq = ']====]'
+    end
+    local f = io.open(path) or error("Could not open " .. path)
+    local in_help = false
+    local help = ''
+    for line in f:lines() do
+        if line:endswith(begin_seq) then
+            in_help = true
+        elseif in_help then
+            if line:endswith(end_seq) then
+                break
+            end
+            if line ~= script_name and line ~= ('='):rep(#script_name) then
+                help = help .. line .. '\n'
+            end
+        end
+    end
+    f:close()
+    help = help:gsub('^\n+', ''):gsub('\n+$', '')
+    return help
 end
 
 local function _run_command(...)

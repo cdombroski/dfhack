@@ -40,7 +40,6 @@
 #include "df/plant_raw.h"
 #include "df/inorganic_raw.h"
 #include "df/builtin_mats.h"
-#include "df/vehicle.h"
 
 using std::vector;
 using std::string;
@@ -59,9 +58,12 @@ REQUIRE_GLOBAL(job_next_id);
 /* Plugin registration */
 
 static command_result workflow_cmd(color_ostream &out, vector <string> & parameters);
+static command_result fix_job_postings_cmd(color_ostream &out, vector<string> &parameters);
 
 static void init_state(color_ostream &out);
 static void cleanup_state(color_ostream &out);
+
+static int fix_job_postings(color_ostream *out = NULL, bool dry_run = false);
 
 DFhackCExport command_result plugin_init (color_ostream &out, std::vector <PluginCommand> &commands)
 {
@@ -142,6 +144,13 @@ DFhackCExport command_result plugin_init (color_ostream &out, std::vector <Plugi
                 "    Maintain 10-100 locally-made crafts of exceptional quality.\n"
             )
         );
+        commands.push_back(PluginCommand(
+            "fix-job-postings",
+            "Fix broken job postings caused by certain versions of workflow",
+            fix_job_postings_cmd, false,
+            "fix-job-postings: Fix job postings\n"
+            "fix-job-postings dry|[any argument]: Dry run only (avoid making changes)\n"
+        ));
     }
 
     init_state(out);
@@ -170,6 +179,14 @@ DFhackCExport command_result plugin_onstatechange(color_ostream &out, state_chan
         break;
     }
 
+    return CR_OK;
+}
+
+command_result fix_job_postings_cmd(color_ostream &out, vector<string> &parameters)
+{
+    bool dry = parameters.size();
+    int fixed = fix_job_postings(&out, dry);
+    out << fixed << " job issue(s) " << (dry ? "detected but not fixed" : "fixed") << endl;
     return CR_OK;
 }
 
@@ -254,7 +271,7 @@ public:
             if (!resume_time)
                 want_resumed = false;
             else if (world->frame_counter >= resume_time)
-                actual_job->flags.bits.suspend = false;
+                set_resumed(true);
         }
     }
 
@@ -262,7 +279,7 @@ public:
     {
         actual_job = job;
         job->flags.bits.repeat = true;
-        job->flags.bits.suspend = true;
+        set_resumed(false);
 
         resume_delay = std::min(DAY_TICKS*MONTH_DAYS, 5*resume_delay/3);
         resume_time = world->frame_counter + resume_delay;
@@ -272,8 +289,11 @@ public:
     {
         if (resume)
         {
-            if (world->frame_counter >= resume_time)
+            if (world->frame_counter >= resume_time && actual_job->flags.bits.suspend)
+            {
+                Job::removePostings(actual_job, true);
                 actual_job->flags.bits.suspend = false;
+            }
         }
         else
         {
@@ -281,7 +301,11 @@ public:
             if (isActuallyResumed())
                 resume_delay = DAY_TICKS;
 
-            actual_job->flags.bits.suspend = true;
+            if (!actual_job->flags.bits.suspend)
+            {
+                actual_job->flags.bits.suspend = true;
+                Job::removePostings(actual_job, true);
+            }
         }
 
         want_resumed = resume;
@@ -332,7 +356,9 @@ public:
         : is_craft(false), min_quality(item_quality::Ordinary), is_local(false),
           weight(0), item_amount(0), item_count(0), item_inuse_amount(0), item_inuse_count(0),
           is_active(false), cant_resume_reported(false), low_stock_reported(-1)
-    {}
+    {
+        mat_mask.whole = 0; // see https://github.com/DFHack/dfhack/issues/1047
+    }
 
     int goalCount() { return config.ival(0); }
     void setGoalCount(int v) { config.ival(0) = v; }
@@ -398,6 +424,34 @@ public:
         history.set_int28(base + HIST_INUSE_AMOUNT*int28_size, item_inuse_amount);
     }
 };
+
+static int fix_job_postings (color_ostream *out, bool dry_run)
+{
+    int count = 0;
+    df::job_list_link *link = &world->jobs.list;
+    while (link)
+    {
+        df::job *job = link->item;
+        if (job)
+        {
+            for (size_t i = 0; i < world->jobs.postings.size(); ++i)
+            {
+                df::job_handler::T_postings *posting = world->jobs.postings[i];
+                if (posting->job == job && i != size_t(job->posting_index) && !posting->flags.bits.dead)
+                {
+                    ++count;
+                    if (out)
+                        *out << "Found extra job posting: Job " << job->id << ": "
+                            << Job::getName(job) << endl;
+                    if (!dry_run)
+                        posting->flags.bits.dead = true;
+                }
+            }
+        }
+        link = link->next;
+    }
+    return count;
+}
 
 /******************************
  *      GLOBAL VARIABLES      *
@@ -471,7 +525,7 @@ static void stop_protect(color_ostream &out)
     pending_recover.clear();
 
     if (!known_jobs.empty())
-        out.print("Unprotecting %d jobs.\n", known_jobs.size());
+        out.print("Unprotecting %zd jobs.\n", known_jobs.size());
 
     for (TKnownJobs::iterator it = known_jobs.begin(); it != known_jobs.end(); ++it)
         delete it->second;
@@ -495,10 +549,15 @@ static ItemConstraint *get_constraint(color_ostream &out, const std::string &str
 
 static void start_protect(color_ostream &out)
 {
+    out << "workflow: checking for existing job issues" << endl;
+    int count = fix_job_postings(&out);
+    if (count)
+        out << "workflow: fixed " << count << " job issues" << endl;
+
     check_lost_jobs(out, 0);
 
     if (!known_jobs.empty())
-        out.print("Protecting %d jobs.\n", known_jobs.size());
+        out.print("Protecting %zd jobs.\n", known_jobs.size());
 }
 
 static void init_state(color_ostream &out)
@@ -613,7 +672,7 @@ static void check_lost_jobs(color_ostream &out, int ticks)
     ProtectedJob::cur_tick_idx++;
     if (ticks < 0) ticks = 0;
 
-    df::job_list_link *p = world->job_list.next;
+    df::job_list_link *p = world->jobs.list.next;
     for (; p; p = p->next)
     {
         df::job *job = p->item;
@@ -647,7 +706,7 @@ static void check_lost_jobs(color_ostream &out, int ticks)
 
 static void update_job_data(color_ostream &out)
 {
-    df::job_list_link *p = world->job_list.next;
+    df::job_list_link *p = world->jobs.list.next;
     for (; p; p = p->next)
     {
         ProtectedJob *pj = get_known(p->item->id);
@@ -735,13 +794,13 @@ static ItemConstraint *get_constraint(color_ostream &out, const std::string &str
     if (item.subtype >= 0)
         weight += 10000;
 
-    df::dfhack_material_category mat_mask(0);
+    df::dfhack_material_category mat_mask;
     std::string maskstr = vector_get(tokens,1);
     if (!maskstr.empty() && !parseJobMaterialCategory(&mat_mask, maskstr)) {
         out.printerr("Cannot decode material mask: %s\n", maskstr.c_str());
         return NULL;
     }
-    
+
     if (mat_mask.whole != 0)
         weight += 100;
 
@@ -973,7 +1032,7 @@ static int cbEnumJobOutputs(lua_State *L)
 
     lua_settop(L, 6);
 
-    df::dfhack_material_category mat_mask(0);
+    df::dfhack_material_category mat_mask;
     if (!lua_isnil(L, 3))
         Lua::CheckDFAssign(L, &mat_mask, 3);
 
@@ -1099,21 +1158,6 @@ static bool itemInRealJob(df::item *item)
                != job_type_class::Hauling;
 }
 
-static bool isRouteVehicle(df::item *item)
-{
-    int id = item->getVehicleID();
-    if (id < 0) return false;
-
-    auto vehicle = df::vehicle::find(id);
-    return vehicle && vehicle->route_id >= 0;
-}
-
-static bool isAssignedSquad(df::item *item)
-{
-    auto &vec = ui->equipment.items_assigned[item->getType()];
-    return binsearch_index(vec, &df::item::id, item->id) >= 0;
-}
-
 static void map_job_items(color_ostream &out)
 {
     for (size_t i = 0; i < constraints.size(); i++)
@@ -1228,10 +1272,10 @@ static void map_job_items(color_ostream &out)
                 item->flags.bits.owned ||
                 item->flags.bits.in_chest ||
                 item->isAssignedToStockpile() ||
-                isRouteVehicle(item) ||
+                Items::isRouteVehicle(item) ||
                 itemInRealJob(item) ||
                 itemBusy(item) ||
-                isAssignedSquad(item))
+                Items::isSquadEquipment(item))
             {
                 is_invalid = true;
                 cv->item_inuse_count++;
@@ -1596,6 +1640,12 @@ static int getCountHistory(lua_State *L)
     return 1;
 }
 
+static int fixJobPostings(lua_State *L)
+{
+    bool dry = lua_toboolean(L, 1);
+    lua_pushinteger(L, fix_job_postings(NULL, dry));
+    return 1;
+}
 
 DFHACK_PLUGIN_LUA_FUNCTIONS {
     DFHACK_LUA_FUNCTION(deleteConstraint),
@@ -1607,6 +1657,7 @@ DFHACK_PLUGIN_LUA_COMMANDS {
     DFHACK_LUA_COMMAND(findConstraint),
     DFHACK_LUA_COMMAND(setConstraint),
     DFHACK_LUA_COMMAND(getCountHistory),
+    DFHACK_LUA_COMMAND(fixJobPostings),
     DFHACK_LUA_END
 };
 

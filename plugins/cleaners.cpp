@@ -1,17 +1,22 @@
 #include "Core.h"
 #include "Console.h"
+#include "DataDefs.h"
 #include "Export.h"
 #include "PluginManager.h"
+
 #include "modules/Maps.h"
 
-#include "DataDefs.h"
-#include "df/item_actual.h"
-#include "df/unit.h"
-#include "df/spatter.h"
-#include "df/matter_state.h"
-#include "df/global_objects.h"
+#include "df/block_square_event.h"
+#include "df/block_square_event_material_spatterst.h"
 #include "df/builtin_mats.h"
+#include "df/global_objects.h"
+#include "df/item_actual.h"
+#include "df/map_block.h"
+#include "df/matter_state.h"
 #include "df/plant.h"
+#include "df/spatter.h"
+#include "df/unit.h"
+#include "df/world.h"
 
 using std::vector;
 using std::string;
@@ -236,7 +241,7 @@ command_result clean (color_ostream &out, vector <string> & parameters)
 DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <PluginCommand> &commands)
 {
     commands.push_back(PluginCommand(
-        "clean","Removes contaminants from map tiles, items and creatures.",
+        "clean","Remove contaminants from tiles, items and creatures.",
         clean, false,
         "  Removes contaminants from map tiles, items and creatures.\n"
         "Options:\n"

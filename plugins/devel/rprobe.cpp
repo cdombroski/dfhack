@@ -45,7 +45,7 @@ DFHACK_PLUGIN("rprobe");
 DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <PluginCommand> &commands)
 {
     commands.push_back(PluginCommand(
-        "rprobe", "Display assorted region information from embark screen",
+        "rprobe", "Display region information from embark screen",
         rprobe, false,
         "Display assorted region information from embark screen\n"
     ));
@@ -63,7 +63,7 @@ command_result rprobe (color_ostream &out, vector <string> & parameters)
     CoreSuspender suspend;
 
     bool set = false;
-    int to_set, set_field, set_val;
+    int to_set = -1, set_field = -1, set_val = -1;
 
     // Embark screen active: estimate using world geology data
     VIRTUAL_CAST_VAR(screen, df::viewscreen_choose_start_sitest, Core::getTopViewscreen());
@@ -107,16 +107,15 @@ command_result rprobe (color_ostream &out, vector <string> & parameters)
     }
 
     df::world_data *data = world->world_data;
-    coord2d cur_region = screen->location.region_pos;
 
     // Compute biomes
-    for (int i = 0; i < screen->location.biome_rgn.size(); i++)
+    for (size_t i = 0; i < screen->location.biome_rgn.size(); i++)
     {
         coord2d rg = screen->location.biome_rgn[i];
 
         auto rd = &data->region_map[rg.x][rg.y];
 
-        if (set && i == to_set) {
+        if (set && int(i) == to_set) {
             if (set_field == 0)
                 rd->rainfall = set_val;
             else if (set_field == 1)
@@ -153,7 +152,7 @@ command_result rprobe (color_ostream &out, vector <string> & parameters)
         int c = sizeof(*rd) / sizeof(int32_t);
         for (int j = 0; j < c; j++) {
             if (j % 8 == 0)
-            out << endl << setfill('0') << setw(8) << hex << (int)(rd+j) << ": ";
+            out << endl << setfill('0') << setw(8) << hex << (intptr_t)(rd+j) << ": ";
             out << " " << setfill('0') << setw(8) << hex << p[j];
         }
         out << setfill(' ') << setw(0) << dec << endl;

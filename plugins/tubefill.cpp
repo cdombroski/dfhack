@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <iostream>
 #include <map>
+#include <cinttypes>
 #include <vector>
 #include "Core.h"
 #include "Console.h"
@@ -14,6 +15,8 @@
 #include "TileTypes.h"
 
 #include "df/deep_vein_hollow.h"
+#include "df/map_block.h"
+#include "df/world.h"
 
 using namespace DFHack;
 using namespace df::enums;
@@ -115,6 +118,6 @@ command_result tubefill(color_ostream &out, std::vector<std::string> & params)
             }
         }
     }
-    out.print("Found and changed %d tiles.\n", count);
+    out.print("Found and changed %" PRId64 " tiles.\n", count);
     return CR_OK;
 }

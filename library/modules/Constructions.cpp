@@ -31,21 +31,21 @@ distribution.
 using namespace std;
 
 
-#include "VersionInfo.h"
-#include "MemAccess.h"
-#include "Types.h"
 #include "Core.h"
+#include "MemAccess.h"
+#include "TileTypes.h"
+#include "Types.h"
+#include "VersionInfo.h"
 
-#include "modules/Constructions.h"
 #include "modules/Buildings.h"
+#include "modules/Constructions.h"
 #include "modules/Maps.h"
 
-#include "TileTypes.h"
-
-#include "df/world.h"
-#include "df/job_item.h"
-#include "df/building_type.h"
 #include "df/building_constructionst.h"
+#include "df/building_type.h"
+#include "df/job_item.h"
+#include "df/map_block.h"
+#include "df/world.h"
 
 using namespace DFHack;
 using namespace df::enums;
@@ -66,6 +66,15 @@ df::construction * Constructions::getConstruction(const int32_t index)
     if (uint32_t(index) >= getCount())
         return NULL;
     return world->constructions[index];
+}
+
+df::construction * Constructions::findAtTile(df::coord pos)
+{
+    for (auto it = world->constructions.begin(); it != world->constructions.end(); ++it) {
+        if ((*it)->pos == pos)
+            return *it;
+    }
+    return NULL;
 }
 
 bool Constructions::copyConstruction(const int32_t index, t_construction &out)
